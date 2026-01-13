@@ -1,0 +1,336 @@
+# Legend CLI
+
+A powerful command-line tool for creating Legend artifacts using natural language prompts and automatic database schema introspection.
+
+## Features
+
+- **AI-Powered Code Generation**: Generate Pure code (classes, stores, connections, mappings) from natural language descriptions using Claude AI
+- **Automatic Model Generation**: Introspect Snowflake databases and automatically generate complete Legend models
+- **Direct SDLC Integration**: Push generated code directly to Legend SDLC and commit changes
+- **Project & Workspace Management**: Create and manage Legend projects and workspaces from the CLI
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/legend-cli.git
+cd legend-cli
+
+# Install with base dependencies
+pip install -e .
+
+# Install with Snowflake support (for automatic model generation)
+pip install -e ".[snowflake]"
+```
+
+## Configuration
+
+Set the following environment variables:
+
+```bash
+# Legend SDLC connection
+export LEGEND_SDLC_URL="http://localhost:6900/sdlc/api"
+
+# For AI-powered code generation
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# For Snowflake introspection
+export SNOWFLAKE_ACCOUNT="your-account"
+export SNOWFLAKE_USER="your-user"
+export SNOWFLAKE_PASSWORD="your-password"
+export SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
+export SNOWFLAKE_ROLE="ACCOUNTADMIN"
+```
+
+## Quick Start
+
+### 1. Check Connection
+
+```bash
+# Verify Legend SDLC connection
+legend-cli health
+
+# Show current configuration
+legend-cli config
+```
+
+### 2. Create a Project
+
+```bash
+legend-cli project create "My Data Model"
+```
+
+### 3. Generate Entities with AI
+
+```bash
+# Generate a class from natural language
+legend-cli create class "A Customer with id, name, email, and registration date"
+
+# Generate and push to SDLC
+legend-cli create class "A Product with name, price, and category" --push --project 2
+```
+
+### 4. Generate Complete Model from Snowflake
+
+```bash
+# Automatically generate store, classes, connection, mapping, runtime
+legend-cli model from-snowflake MY_DATABASE --schema MY_SCHEMA
+```
+
+## Commands
+
+### Project Management
+
+```bash
+# List all projects
+legend-cli project list
+
+# Create a new project
+legend-cli project create "Project Name" --description "Description"
+
+# Get project details
+legend-cli project info <project-id>
+```
+
+### Workspace Management
+
+```bash
+# List workspaces
+legend-cli workspace list <project-id>
+
+# Create a workspace
+legend-cli workspace create <project-id> my-workspace
+
+# List entities in a workspace
+legend-cli workspace entities <project-id> <workspace-id>
+```
+
+### AI-Powered Entity Creation
+
+Generate Pure code from natural language descriptions:
+
+```bash
+# Generate a class
+legend-cli create class "A Person with firstName, lastName, email, and birthDate"
+
+# Generate a database store
+legend-cli create store "Snowflake database called ProductDB with schema SALES containing PRODUCTS table with columns id, name, price, category"
+
+# Generate a connection
+legend-cli create connection "Snowflake connection to account ABC123, warehouse COMPUTE_WH, database ProductDB"
+
+# Generate a mapping
+legend-cli create mapping "Map Product class to PRODUCTS table in ProductDB"
+```
+
+#### Options for create commands
+
+| Option | Description |
+|--------|-------------|
+| `--push` | Push generated code to Legend SDLC |
+| `--project` | Project ID to push to |
+| `--workspace` | Workspace ID (default: dev-workspace) |
+| `--message` | Commit message |
+| `--output` | Save generated code to file |
+| `--package` | Package path (e.g., model::domain) |
+
+#### Examples with options
+
+```bash
+# Generate and push a class
+legend-cli create class "An Order with orderId, items, total" \
+  --push --project 2 --message "Added Order class"
+
+# Generate and save to file
+legend-cli create store "PostgreSQL database with users table" \
+  --output ./my_store.pure
+
+# Push existing Pure file
+legend-cli create from-file ./model.pure --project 2
+```
+
+### Automatic Model Generation from Snowflake
+
+The most powerful feature - automatically generate a complete Legend model from a Snowflake database:
+
+```bash
+legend-cli model from-snowflake <DATABASE_NAME> [OPTIONS]
+```
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--schema, -s` | Specific schema to introspect (default: all) |
+| `--project-name, -n` | Name for new Legend project |
+| `--project-id, -p` | Use existing project ID |
+| `--workspace, -w` | Workspace ID (default: dev-workspace) |
+| `--account, -a` | Snowflake account |
+| `--user, -u` | Snowflake user |
+| `--password` | Snowflake password |
+| `--warehouse` | Snowflake warehouse |
+| `--role, -r` | Snowflake role (default: ACCOUNTADMIN) |
+| `--region` | Snowflake region (default: us-east-1) |
+| `--dry-run` | Preview without pushing |
+| `--output, -o` | Save Pure files to directory |
+
+#### Examples
+
+```bash
+# Generate model for entire database
+legend-cli model from-snowflake FACTSET_DATA
+
+# Generate model for specific schema
+legend-cli model from-snowflake SEC_FILINGS --schema CYBERSYN
+
+# Preview without pushing (dry run)
+legend-cli model from-snowflake MY_DB --schema ANALYTICS --dry-run
+
+# Save generated files locally
+legend-cli model from-snowflake MY_DB --output ./generated_pure
+
+# Use existing project
+legend-cli model from-snowflake MY_DB --project-id 5
+
+# Full example with all options
+legend-cli model from-snowflake PROD_DATABASE \
+  --schema ANALYTICS \
+  --project-name "analytics-model" \
+  --account ABC123-XYZ \
+  --warehouse COMPUTE_WH \
+  --role ANALYST
+```
+
+#### What gets generated
+
+| Artifact | Description |
+|----------|-------------|
+| **Store** | Database definition with all tables/views and columns |
+| **Classes** | One class per table with properties matching columns |
+| **Connection** | Snowflake connection with authentication config |
+| **Mapping** | Relational mapping from classes to tables |
+| **Runtime** | Runtime configuration linking mapping and connection |
+
+### Snowflake Utilities
+
+```bash
+# List available databases
+legend-cli model list-databases
+
+# List schemas in a database
+legend-cli model list-schemas MY_DATABASE
+```
+
+## Architecture
+
+```
+legend-cli/
+├── legend_cli/
+│   ├── main.py              # CLI entry point
+│   ├── config.py            # Configuration management
+│   ├── sdlc_client.py       # Legend SDLC API client
+│   ├── engine_client.py     # Legend Engine API client
+│   ├── claude_client.py     # Claude AI integration
+│   ├── snowflake_client.py  # Snowflake introspection
+│   ├── prompts/
+│   │   ├── templates.py     # AI prompt templates
+│   │   └── examples.py      # Few-shot examples
+│   └── commands/
+│       ├── project.py       # Project commands
+│       ├── workspace.py     # Workspace commands
+│       ├── create.py        # Entity creation commands
+│       └── model.py         # Model generation commands
+```
+
+## Requirements
+
+- Python 3.9+
+- Legend Omnibus or Legend SDLC running locally
+- Anthropic API key (for AI features)
+- Snowflake account (for model generation)
+
+## Dependencies
+
+- **typer**: CLI framework
+- **httpx**: HTTP client
+- **anthropic**: Claude AI SDK
+- **pydantic**: Data validation
+- **rich**: Terminal formatting
+- **snowflake-connector-python**: Snowflake connectivity (optional)
+
+## Examples
+
+### Complete Workflow Example
+
+```bash
+# 1. Set up environment
+export ANTHROPIC_API_KEY="sk-ant-..."
+export SNOWFLAKE_ACCOUNT="ABC123"
+export SNOWFLAKE_USER="analyst"
+export SNOWFLAKE_PASSWORD="..."
+export SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
+
+# 2. Generate complete model from Snowflake
+legend-cli model from-snowflake PROD_DATA \
+  --schema SALES \
+  --project-name "sales-analytics"
+
+# 3. Add additional entities with AI
+legend-cli create class "A SalesReport with region, quarter, revenue, and growth percentage" \
+  --push --project 4
+
+# 4. View in Legend Studio
+# Open http://localhost:6900/studio/edit/4/dev-workspace
+```
+
+### Using with Existing Project
+
+```bash
+# List projects to find ID
+legend-cli project list
+
+# Add entities to existing project
+legend-cli create class "A new entity" --push --project 2 --workspace main
+
+# Check what was created
+legend-cli workspace entities 2 main
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+```bash
+# Check SDLC health
+legend-cli health
+
+# Verify configuration
+legend-cli config
+```
+
+### Snowflake Issues
+
+```bash
+# Test connection with list-databases
+legend-cli model list-databases
+
+# Check available schemas
+legend-cli model list-schemas YOUR_DATABASE
+```
+
+### Common Errors
+
+| Error | Solution |
+|-------|----------|
+| "Cannot connect to Legend SDLC" | Ensure Legend Omnibus is running |
+| "Anthropic API key not configured" | Set ANTHROPIC_API_KEY environment variable |
+| "snowflake-connector-python required" | Install with `pip install -e ".[snowflake]"` |
+| "No tables found" | Check schema name; views are included automatically |
+
+## License
+
+Apache 2.0
+
+## Contributing
+
+Contributions welcome! Please open an issue or pull request.
