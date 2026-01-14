@@ -108,7 +108,7 @@ def format_classes_for_prompt(tables: list) -> str:
         for col in table.columns:
             prop_name = table.get_property_name(col.name)
             prop_type = col.to_pure_property_type()
-            nullable = "nullable" if col.nullable else "required"
+            nullable = "nullable" if col.is_nullable else "required"
             lines.append(f"  - {prop_name} ({prop_type}, {nullable}) [column: {col.name}]")
 
     return "\n".join(lines)

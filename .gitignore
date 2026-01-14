@@ -43,3 +43,10 @@ htmlcov/
 # Misc
 *.log
 .DS_Store
+
+# Sensitive files - keys and credentials
+snowflake_keys.txt
+*_keys.txt
+*.pem
+*.p8
+*.key
