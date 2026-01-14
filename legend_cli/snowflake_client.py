@@ -648,11 +648,11 @@ class PureCodeGenerator:
             lines.append(f"    passPhraseVaultReference: '{passphrase_vault_ref}';")
             lines.append("  };")
         else:
-            # Username/password authentication
-            lines.append("  auth: UsernamePassword")
+            # Middle-tier username/password authentication
+            # Uses Legend's credential vault to retrieve username and password
+            lines.append("  auth: MiddleTierUserNamePassword")
             lines.append("  {")
-            lines.append(f"    username: '{username or 'LEGEND_USER'}';")
-            lines.append(f"    passwordVaultReference: '{password_vault_ref}';")
+            lines.append(f"    vaultReference: '{password_vault_ref}';")
             lines.append("  };")
 
         lines.append("}")

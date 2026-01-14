@@ -60,11 +60,13 @@ def generate_from_snowflake(
     role: str = typer.Option("ACCOUNTADMIN", "--role", "-r", help="Snowflake role"),
     region: str = typer.Option("us-east-1", "--region", help="Snowflake region"),
     # Authentication options for Legend connection
-    auth_type: str = typer.Option("keypair", "--auth-type", help="Auth type: 'keypair' (SnowflakePublic) or 'password' (UsernamePassword)"),
+    auth_type: str = typer.Option("keypair", "--auth-type", help="Auth type: 'keypair' (SnowflakePublic) or 'password' (MiddleTierUserNamePassword)"),
     legend_user: Optional[str] = typer.Option(None, "--legend-user", help="Snowflake username for Legend connection (defaults to --user)"),
     private_key_vault_ref: str = typer.Option("SNOWFLAKE_PRIVATE_KEY", "--private-key-ref", help="Vault reference for private key"),
     passphrase_vault_ref: str = typer.Option("SNOWFLAKE_PASSPHRASE", "--passphrase-ref", help="Vault reference for passphrase"),
     password_vault_ref: str = typer.Option("SNOWFLAKE_PASSWORD", "--password-ref", help="Vault reference for password (if using password auth)"),
+    # AWS Secrets Manager option
+    aws_secret: Optional[str] = typer.Option(None, "--aws-secret", help="AWS Secrets Manager secret name (e.g., 'legend/snowflake/credentials'). Vault refs will be formatted as 'secretName:key'"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
 ):
@@ -159,6 +161,17 @@ def generate_from_snowflake(
     sf_user = user or os.environ.get("SNOWFLAKE_USER", "")
     connection_user = legend_user or sf_user  # User for Legend connection
 
+    # If AWS secret is provided, format vault references as secretName:key
+    actual_private_key_ref = private_key_vault_ref
+    actual_passphrase_ref = passphrase_vault_ref
+    actual_password_ref = password_vault_ref
+
+    if aws_secret:
+        console.print(f"[cyan]Using AWS Secrets Manager: {aws_secret}[/cyan]")
+        actual_private_key_ref = f"{aws_secret}:private_key"
+        actual_passphrase_ref = f"{aws_secret}:passphrase"
+        actual_password_ref = f"{aws_secret}:password"
+
     generator = PureCodeGenerator(db)
     artifacts = generator.generate_all(
         account=sf_account,
@@ -167,9 +180,9 @@ def generate_from_snowflake(
         region=region,
         username=connection_user,
         auth_type=auth_type,
-        private_key_vault_ref=private_key_vault_ref,
-        passphrase_vault_ref=passphrase_vault_ref,
-        password_vault_ref=password_vault_ref,
+        private_key_vault_ref=actual_private_key_ref,
+        passphrase_vault_ref=actual_passphrase_ref,
+        password_vault_ref=actual_password_ref,
     )
 
     # Display generated artifacts

@@ -184,6 +184,7 @@ legend-cli model from-snowflake <DATABASE_NAME> [OPTIONS]
 | `--private-key-ref` | Vault reference for private key (default: SNOWFLAKE_PRIVATE_KEY) |
 | `--passphrase-ref` | Vault reference for passphrase (default: SNOWFLAKE_PASSPHRASE) |
 | `--password-ref` | Vault reference for password (default: SNOWFLAKE_PASSWORD) |
+| `--aws-secret` | AWS Secrets Manager secret name (e.g., `legend/snowflake/credentials`) |
 
 #### Snowflake Authentication in Legend
 
@@ -207,7 +208,7 @@ auth: SnowflakePublic
 };
 ```
 
-**Username/Password Authentication:**
+**Password Authentication (MiddleTier):**
 ```bash
 legend-cli model from-snowflake MY_DB \
   --auth-type password \
@@ -217,10 +218,25 @@ legend-cli model from-snowflake MY_DB \
 
 Generated connection:
 ```pure
-auth: UsernamePassword
+auth: MiddleTierUserNamePassword
 {
-  username: 'MY_USER';
-  passwordVaultReference: 'MY_PASSWORD_SECRET';
+  vaultReference: 'MY_PASSWORD_SECRET';
+};
+```
+
+**AWS Secrets Manager Authentication (Recommended):**
+```bash
+legend-cli model from-snowflake MY_DB \
+  --auth-type password \
+  --legend-user "MY_USER" \
+  --aws-secret "legend/snowflake/credentials"
+```
+
+Generated connection:
+```pure
+auth: MiddleTierUserNamePassword
+{
+  vaultReference: 'legend/snowflake/credentials:password';
 };
 ```
 
@@ -426,6 +442,119 @@ legend-cli create class "A new entity" --push --project 2 --workspace main
 legend-cli workspace entities 2 main
 ```
 
+## AWS Secrets Manager Setup
+
+For production use, AWS Secrets Manager provides secure credential storage that Legend Engine can access at runtime.
+
+### 1. Create Secret in AWS
+
+```bash
+# Install AWS CLI if not already installed
+brew install awscli
+
+# Configure AWS credentials
+aws configure
+
+# Create the secret with Snowflake credentials
+aws secretsmanager create-secret \
+  --name "legend/snowflake/credentials" \
+  --description "Snowflake credentials for Legend Platform" \
+  --secret-string '{
+    "username": "YOUR_SNOWFLAKE_USER",
+    "password": "YOUR_SNOWFLAKE_PASSWORD",
+    "account": "YOUR_ACCOUNT_ID",
+    "warehouse": "COMPUTE_WH",
+    "role": "ACCOUNTADMIN"
+  }' \
+  --region us-east-1
+```
+
+### 2. Configure Legend Engine
+
+Legend Engine needs to be configured with AWS Secrets Manager vault and have access to AWS credentials.
+
+**Option A: Use the startup script (recommended)**
+
+Create a startup script `start-legend-omnibus.sh`:
+
+```bash
+#!/bin/bash
+# Start Legend Omnibus with AWS Secrets Manager support
+
+# Extract AWS credentials
+AWS_ACCESS_KEY_ID=$(grep aws_access_key_id ~/.aws/credentials | head -1 | cut -d= -f2 | tr -d ' ')
+AWS_SECRET_ACCESS_KEY=$(grep aws_secret_access_key ~/.aws/credentials | head -1 | cut -d= -f2 | tr -d ' ')
+
+# Stop existing container
+docker stop legend-omnibus 2>/dev/null
+docker rm legend-omnibus 2>/dev/null
+
+# Start with AWS credentials
+docker run -d \
+    --name legend-omnibus \
+    -p 6900:6900 \
+    -e LEGEND_OMNIBUS_CONFIG_GITLAB_PAT="your-gitlab-pat" \
+    -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+    -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+    -e AWS_REGION="us-east-1" \
+    finos/legend-omnibus:latest-slim
+
+# Wait for startup
+sleep 10
+
+# Add AWS Secrets Manager vault to engine config
+docker exec legend-omnibus sed -i '/^vaults:/a\  - _type: awsSecretsManager\n    region: us-east-1' \
+    /app/engine/config/engine-config.yaml
+
+echo "Legend Omnibus started with AWS Secrets Manager support"
+echo "Studio: http://localhost:6900/studio"
+```
+
+**Option B: Manual configuration**
+
+Add AWS Secrets Manager to Legend Engine's `engine-config.yaml`:
+
+```yaml
+vaults:
+  - _type: awsSecretsManager
+    region: us-east-1
+  - _type: property
+    location: /config/vault.properties
+```
+
+### 3. Generate Model with AWS Secret
+
+```bash
+legend-cli model from-snowflake MY_DATABASE \
+  --schema MY_SCHEMA \
+  --auth-type password \
+  --legend-user "MY_USER" \
+  --aws-secret "legend/snowflake/credentials" \
+  --project-name "my-project"
+```
+
+### AWS Secret Format
+
+When using `--aws-secret`, the vault references are automatically formatted as `secretName:jsonKey`:
+
+| Auth Type | Vault Reference Format |
+|-----------|----------------------|
+| `password` | `legend/snowflake/credentials:password` |
+| `keypair` | `legend/snowflake/credentials:private_key` |
+| `keypair` | `legend/snowflake/credentials:passphrase` |
+
+### Verifying AWS Secret
+
+```bash
+# List secrets
+aws secretsmanager list-secrets --region us-east-1
+
+# Get secret value
+aws secretsmanager get-secret-value \
+  --secret-id "legend/snowflake/credentials" \
+  --region us-east-1
+```
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -456,6 +585,22 @@ legend-cli model list-schemas YOUR_DATABASE
 | "Anthropic API key not configured" | Set ANTHROPIC_API_KEY environment variable |
 | "snowflake-connector-python required" | Install with `pip install -e ".[snowflake]"` |
 | "No tables found" | Check schema name; views are included automatically |
+| "Unable to locate credentials" | Run `aws configure` to set up AWS credentials |
+| "Access denied to secret" | Check IAM permissions for Secrets Manager access |
+| "Secret not found" | Verify secret name and region match |
+
+### AWS Secrets Manager Issues
+
+```bash
+# Verify AWS credentials
+aws sts get-caller-identity
+
+# Check if secret exists
+aws secretsmanager describe-secret --secret-id "legend/snowflake/credentials"
+
+# Verify Legend Engine has AWS vault configured
+docker exec legend-omnibus grep -A 5 "vaults:" /app/engine/config/engine-config.yaml
+```
 
 ## License
 
