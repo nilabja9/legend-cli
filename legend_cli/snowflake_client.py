@@ -606,10 +606,25 @@ class PureCodeGenerator:
         warehouse: str,
         role: str = "ACCOUNTADMIN",
         region: str = "us-east-1",
-        auth_type: str = "public_key",
+        auth_type: str = "keypair",
         username: Optional[str] = None,
+        private_key_vault_ref: str = "SNOWFLAKE_PRIVATE_KEY",
+        passphrase_vault_ref: str = "SNOWFLAKE_PASSPHRASE",
+        password_vault_ref: str = "SNOWFLAKE_PASSWORD",
     ) -> str:
-        """Generate Pure connection definition."""
+        """Generate Pure connection definition.
+
+        Args:
+            account: Snowflake account identifier
+            warehouse: Snowflake warehouse name
+            role: Snowflake role (default: ACCOUNTADMIN)
+            region: Snowflake region (default: us-east-1)
+            auth_type: Authentication type - 'keypair' for SnowflakePublic or 'password' for UsernamePassword
+            username: Snowflake username for the connection
+            private_key_vault_ref: Vault reference name for the private key (keypair auth)
+            passphrase_vault_ref: Vault reference name for the key passphrase (keypair auth)
+            password_vault_ref: Vault reference name for password (password auth)
+        """
         lines = ["###Connection"]
         lines.append(f"RelationalDatabaseConnection {self.package_prefix}::connection::{self.database.name}Connection")
         lines.append("{")
@@ -624,18 +639,20 @@ class PureCodeGenerator:
         lines.append(f"    role: '{role}';")
         lines.append("  };")
 
-        if auth_type == "public_key":
+        if auth_type == "keypair":
+            # Key-pair authentication (recommended for production)
             lines.append("  auth: SnowflakePublic")
             lines.append("  {")
             lines.append(f"    publicUserName: '{username or 'LEGEND_USER'}';")
-            lines.append("    privateKeyVaultReference: 'SNOWFLAKE_PRIVATE_KEY';")
-            lines.append("    passPhraseVaultReference: 'SNOWFLAKE_PASSPHRASE';")
+            lines.append(f"    privateKeyVaultReference: '{private_key_vault_ref}';")
+            lines.append(f"    passPhraseVaultReference: '{passphrase_vault_ref}';")
             lines.append("  };")
         else:
+            # Username/password authentication
             lines.append("  auth: UsernamePassword")
             lines.append("  {")
             lines.append(f"    username: '{username or 'LEGEND_USER'}';")
-            lines.append("    passwordVaultReference: 'SNOWFLAKE_PASSWORD';")
+            lines.append(f"    passwordVaultReference: '{password_vault_ref}';")
             lines.append("  };")
 
         lines.append("}")
@@ -777,12 +794,38 @@ class PureCodeGenerator:
         role: str = "ACCOUNTADMIN",
         region: str = "us-east-1",
         username: Optional[str] = None,
+        auth_type: str = "keypair",
+        private_key_vault_ref: str = "SNOWFLAKE_PRIVATE_KEY",
+        passphrase_vault_ref: str = "SNOWFLAKE_PASSPHRASE",
+        password_vault_ref: str = "SNOWFLAKE_PASSWORD",
     ) -> Dict[str, str]:
-        """Generate all Pure code artifacts."""
+        """Generate all Pure code artifacts.
+
+        Args:
+            account: Snowflake account identifier
+            warehouse: Snowflake warehouse name
+            role: Snowflake role
+            region: Snowflake region
+            username: Snowflake username for the connection
+            auth_type: Authentication type - 'keypair' or 'password'
+            private_key_vault_ref: Vault reference for private key
+            passphrase_vault_ref: Vault reference for passphrase
+            password_vault_ref: Vault reference for password
+        """
         artifacts = {
             "store": self.generate_store_with_joins(),  # Use store with joins
             "classes": self.generate_classes(),
-            "connection": self.generate_connection(account, warehouse, role, region, "public_key", username),
+            "connection": self.generate_connection(
+                account=account,
+                warehouse=warehouse,
+                role=role,
+                region=region,
+                auth_type=auth_type,
+                username=username,
+                private_key_vault_ref=private_key_vault_ref,
+                passphrase_vault_ref=passphrase_vault_ref,
+                password_vault_ref=password_vault_ref,
+            ),
             "mapping": self.generate_mapping(),
             "runtime": self.generate_runtime(),
         }

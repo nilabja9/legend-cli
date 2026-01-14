@@ -175,6 +175,55 @@ legend-cli model from-snowflake <DATABASE_NAME> [OPTIONS]
 | `--dry-run` | Preview without pushing |
 | `--output, -o` | Save Pure files to directory |
 
+**Authentication Options (for Legend Connection):**
+
+| Option | Description |
+|--------|-------------|
+| `--auth-type` | Auth type: `keypair` (default) or `password` |
+| `--legend-user` | Snowflake username for Legend connection (defaults to --user) |
+| `--private-key-ref` | Vault reference for private key (default: SNOWFLAKE_PRIVATE_KEY) |
+| `--passphrase-ref` | Vault reference for passphrase (default: SNOWFLAKE_PASSPHRASE) |
+| `--password-ref` | Vault reference for password (default: SNOWFLAKE_PASSWORD) |
+
+#### Snowflake Authentication in Legend
+
+Legend uses **vault references** for credentials - these are named placeholders that Legend resolves at runtime from a configured credential store (AWS Secrets Manager, HashiCorp Vault, etc.).
+
+**Key-pair Authentication (recommended for production):**
+```bash
+legend-cli model from-snowflake MY_DB \
+  --legend-user "SERVICE_ACCOUNT" \
+  --private-key-ref "PROD_SNOWFLAKE_KEY" \
+  --passphrase-ref "PROD_SNOWFLAKE_PASSPHRASE"
+```
+
+Generated connection:
+```pure
+auth: SnowflakePublic
+{
+  publicUserName: 'SERVICE_ACCOUNT';
+  privateKeyVaultReference: 'PROD_SNOWFLAKE_KEY';
+  passPhraseVaultReference: 'PROD_SNOWFLAKE_PASSPHRASE';
+};
+```
+
+**Username/Password Authentication:**
+```bash
+legend-cli model from-snowflake MY_DB \
+  --auth-type password \
+  --legend-user "MY_USER" \
+  --password-ref "MY_PASSWORD_SECRET"
+```
+
+Generated connection:
+```pure
+auth: UsernamePassword
+{
+  username: 'MY_USER';
+  passwordVaultReference: 'MY_PASSWORD_SECRET';
+};
+```
+
 #### Examples
 
 ```bash
@@ -193,13 +242,16 @@ legend-cli model from-snowflake MY_DB --output ./generated_pure
 # Use existing project
 legend-cli model from-snowflake MY_DB --project-id 5
 
-# Full example with all options
+# Full example with custom authentication
 legend-cli model from-snowflake PROD_DATABASE \
   --schema ANALYTICS \
   --project-name "analytics-model" \
   --account ABC123-XYZ \
   --warehouse COMPUTE_WH \
-  --role ANALYST
+  --role ANALYST \
+  --legend-user "LEGEND_SERVICE_ACCOUNT" \
+  --private-key-ref "PROD_SF_PRIVATE_KEY" \
+  --passphrase-ref "PROD_SF_PASSPHRASE"
 ```
 
 #### What gets generated

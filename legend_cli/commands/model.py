@@ -59,6 +59,12 @@ def generate_from_snowflake(
     warehouse: Optional[str] = typer.Option(None, "--warehouse", help="Snowflake warehouse (or SNOWFLAKE_WAREHOUSE env)"),
     role: str = typer.Option("ACCOUNTADMIN", "--role", "-r", help="Snowflake role"),
     region: str = typer.Option("us-east-1", "--region", help="Snowflake region"),
+    # Authentication options for Legend connection
+    auth_type: str = typer.Option("keypair", "--auth-type", help="Auth type: 'keypair' (SnowflakePublic) or 'password' (UsernamePassword)"),
+    legend_user: Optional[str] = typer.Option(None, "--legend-user", help="Snowflake username for Legend connection (defaults to --user)"),
+    private_key_vault_ref: str = typer.Option("SNOWFLAKE_PRIVATE_KEY", "--private-key-ref", help="Vault reference for private key"),
+    passphrase_vault_ref: str = typer.Option("SNOWFLAKE_PASSPHRASE", "--passphrase-ref", help="Vault reference for passphrase"),
+    password_vault_ref: str = typer.Option("SNOWFLAKE_PASSWORD", "--password-ref", help="Vault reference for password (if using password auth)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
 ):
@@ -151,6 +157,7 @@ def generate_from_snowflake(
     sf_account = account or os.environ.get("SNOWFLAKE_ACCOUNT", "")
     sf_warehouse = warehouse or os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
     sf_user = user or os.environ.get("SNOWFLAKE_USER", "")
+    connection_user = legend_user or sf_user  # User for Legend connection
 
     generator = PureCodeGenerator(db)
     artifacts = generator.generate_all(
@@ -158,7 +165,11 @@ def generate_from_snowflake(
         warehouse=sf_warehouse,
         role=role,
         region=region,
-        username=sf_user,
+        username=connection_user,
+        auth_type=auth_type,
+        private_key_vault_ref=private_key_vault_ref,
+        passphrase_vault_ref=passphrase_vault_ref,
+        password_vault_ref=password_vault_ref,
     )
 
     # Display generated artifacts
