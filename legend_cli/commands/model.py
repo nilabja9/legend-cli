@@ -124,6 +124,27 @@ def generate_from_snowflake(
 
     console.print(f"\n[bold]Total: {total_tables} tables across {len(db.schemas)} schema(s)[/bold]")
 
+    # Display detected relationships
+    if db.relationships:
+        console.print(f"\n[green]Detected Relationships:[/green]")
+        rel_table = Table(title="Detected Relationships")
+        rel_table.add_column("Source", style="cyan")
+        rel_table.add_column("Target", style="green")
+        rel_table.add_column("Type", style="yellow")
+        rel_table.add_column("Property", style="magenta")
+
+        for rel in db.relationships:
+            rel_table.add_row(
+                f"{rel.source_table}.{rel.source_column}",
+                f"{rel.target_table}.{rel.target_column}",
+                rel.relationship_type,
+                rel.property_name
+            )
+        console.print(rel_table)
+        console.print(f"[bold]Total: {len(db.relationships)} relationships detected[/bold]")
+    else:
+        console.print(f"\n[yellow]No relationships detected (no matching patterns found)[/yellow]")
+
     # Step 2: Generate Pure code
     console.print("\n[blue]Generating Pure code...[/blue]")
 
