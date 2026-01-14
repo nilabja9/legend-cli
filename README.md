@@ -207,9 +207,10 @@ legend-cli model from-snowflake PROD_DATABASE \
 | Artifact | Description |
 |----------|-------------|
 | **Store** | Database definition with all tables/views, columns, and Join definitions |
-| **Classes** | One class per table with properties and association properties for relationships |
+| **Classes** | One class per table with properties matching columns |
+| **Associations** | Separate Association elements defining relationships between classes |
 | **Connection** | Snowflake connection with authentication config |
-| **Mapping** | Relational mapping from classes to tables with association mappings |
+| **Mapping** | Relational mapping from classes to tables + AssociationMappings |
 | **Runtime** | Runtime configuration linking mapping and connection |
 
 ### Automatic Relationship Detection
@@ -220,9 +221,9 @@ The CLI automatically analyzes your database schema to detect relationships betw
 - Detects foreign key patterns like `COMPANY_ID` → `COMPANY_INDEX` table
 - Recognizes common suffixes: `_ID`, `_KEY`, `_CODE`
 - Identifies index/reference tables: `*_INDEX`, `*_MASTER`, `*_DIM`, `*_LOOKUP`, `*_REF`
-- Creates association properties in classes for easy navigation
+- Creates proper `Association` elements (not just properties in classes)
 - Generates Join definitions in the store
-- Adds association mappings that reference the joins
+- Adds `AssociationMapping` entries that reference the joins
 
 **Example output:**
 ```
@@ -239,13 +240,20 @@ Detected Relationships:
 **Generated Pure code includes:**
 
 ```pure
-// Class with association property
+// Class with regular properties only
 Class model::domain::SecReportIndex
 {
   cik: String[0..1];
   adsh: String[0..1];
-  // ... other properties
-  secCik: model::domain::SecCikIndex[0..1];  // Association
+  companyName: String[0..1];
+  // ... other column properties
+}
+
+// Association element (separate from class)
+Association model::domain::SecReportIndex_SecCikIndex_secCik
+{
+  secReportIndexs: model::domain::SecReportIndex[*];
+  secCik: model::domain::SecCikIndex[0..1];
 }
 
 // Store with Join definition
@@ -259,13 +267,24 @@ Database model::store::MyDatabase
   Join SEC_REPORT_INDEX_SEC_CIK_INDEX(CYBERSYN.SEC_REPORT_INDEX.CIK = CYBERSYN.SEC_CIK_INDEX.CIK)
 )
 
-// Mapping with association mapping
+// Mapping with class mappings and association mappings
 Mapping model::mapping::MyDatabaseMapping
 (
+  // Class mapping
   model::domain::SecReportIndex: Relational
   {
-    // ... property mappings
-    secCik: [model::store::MyDatabase]@SEC_REPORT_INDEX_SEC_CIK_INDEX
+    ~mainTable [model::store::MyDatabase]CYBERSYN.SEC_REPORT_INDEX
+    cik: [model::store::MyDatabase]CYBERSYN.SEC_REPORT_INDEX.CIK
+    // ... other property mappings
+  }
+
+  // Association mapping
+  model::domain::SecReportIndex_SecCikIndex_secCik: Relational
+  {
+    AssociationMapping
+    (
+      secCik: [model::store::MyDatabase]@SEC_REPORT_INDEX_SEC_CIK_INDEX
+    )
   }
 )
 ```
