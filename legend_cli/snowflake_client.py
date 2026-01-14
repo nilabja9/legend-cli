@@ -539,14 +539,34 @@ class PureCodeGenerator:
         lines.append(")")
         return "\n".join(lines)
 
-    def generate_classes(self) -> str:
-        """Generate Pure class definitions (without association properties - those come from Association elements)."""
+    def generate_classes(self, docs: Optional[Dict[str, Any]] = None) -> str:
+        """Generate Pure class definitions (without association properties - those come from Association elements).
+
+        Args:
+            docs: Optional dictionary mapping class names to ClassDocumentation objects.
+                  If provided, doc.doc tagged values will be added to classes and properties.
+        """
         class_defs = []
 
         for schema in self.database.schemas:
             for table in schema.tables:
                 class_name = table.get_class_name()
-                lines = [f"Class {self.package_prefix}::domain::{class_name}"]
+
+                # Get class documentation if available
+                class_doc = ""
+                attr_docs = {}
+                if docs and class_name in docs:
+                    class_doc_obj = docs[class_name]
+                    class_doc = getattr(class_doc_obj, 'class_doc', '') or ''
+                    attr_docs = {k: getattr(v, 'doc', '') for k, v in getattr(class_doc_obj, 'attributes', {}).items()}
+
+                # Class declaration with optional doc.doc
+                if class_doc:
+                    escaped_doc = self._escape_doc_string(class_doc)
+                    lines = [f"Class {{meta::pure::profiles::doc.doc = '{escaped_doc}'}} {self.package_prefix}::domain::{class_name}"]
+                else:
+                    lines = [f"Class {self.package_prefix}::domain::{class_name}"]
+
                 lines.append("{")
 
                 # Regular properties only (no association properties)
@@ -554,12 +574,34 @@ class PureCodeGenerator:
                     prop_name = table.get_property_name(col.name)
                     prop_type = col.to_pure_property_type()
                     multiplicity = "[0..1]" if col.is_nullable else "[1]"
-                    lines.append(f"  {prop_name}: {prop_type}{multiplicity};")
+
+                    # Property with optional doc.doc
+                    prop_doc = attr_docs.get(prop_name, '')
+                    if prop_doc:
+                        escaped_prop_doc = self._escape_doc_string(prop_doc)
+                        lines.append(f"  {{meta::pure::profiles::doc.doc = '{escaped_prop_doc}'}} {prop_name}: {prop_type}{multiplicity};")
+                    else:
+                        lines.append(f"  {prop_name}: {prop_type}{multiplicity};")
 
                 lines.append("}")
                 class_defs.append("\n".join(lines))
 
         return "\n\n".join(class_defs)
+
+    def _escape_doc_string(self, doc: str) -> str:
+        """Escape a documentation string for use in Pure code.
+
+        Escapes single quotes and removes newlines to ensure valid Pure syntax.
+        """
+        if not doc:
+            return ""
+        # Escape single quotes
+        escaped = doc.replace("'", "\\'")
+        # Remove or replace newlines
+        escaped = escaped.replace("\n", " ").replace("\r", "")
+        # Trim excess whitespace
+        escaped = " ".join(escaped.split())
+        return escaped
 
     def generate_associations(self) -> str:
         """Generate Pure Association definitions."""
@@ -798,6 +840,7 @@ class PureCodeGenerator:
         private_key_vault_ref: str = "SNOWFLAKE_PRIVATE_KEY",
         passphrase_vault_ref: str = "SNOWFLAKE_PASSPHRASE",
         password_vault_ref: str = "SNOWFLAKE_PASSWORD",
+        docs: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
         """Generate all Pure code artifacts.
 
@@ -811,10 +854,11 @@ class PureCodeGenerator:
             private_key_vault_ref: Vault reference for private key
             passphrase_vault_ref: Vault reference for passphrase
             password_vault_ref: Vault reference for password
+            docs: Optional dict mapping class names to ClassDocumentation for doc.doc generation
         """
         artifacts = {
             "store": self.generate_store_with_joins(),  # Use store with joins
-            "classes": self.generate_classes(),
+            "classes": self.generate_classes(docs=docs),
             "connection": self.generate_connection(
                 account=account,
                 warehouse=warehouse,

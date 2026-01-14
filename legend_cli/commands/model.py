@@ -1,7 +1,9 @@
 """Model generation commands - creates complete Legend model from Snowflake database."""
 
+import asyncio
 import typer
-from typing import Optional
+from typing import Optional, List
+from typing_extensions import Annotated
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -9,6 +11,7 @@ from rich.table import Table
 from ..snowflake_client import SnowflakeIntrospector, PureCodeGenerator
 from ..sdlc_client import SDLCClient
 from ..engine_client import EngineClient
+from ..doc_generator import DocGenerator
 
 app = typer.Typer(help="Generate complete Legend models from database schemas")
 console = Console()
@@ -67,6 +70,12 @@ def generate_from_snowflake(
     password_vault_ref: str = typer.Option("SNOWFLAKE_PASSWORD", "--password-ref", help="Vault reference for password (if using password auth)"),
     # AWS Secrets Manager option
     aws_secret: Optional[str] = typer.Option(None, "--aws-secret", help="AWS Secrets Manager secret name (e.g., 'legend/snowflake/credentials'). Vault refs will be formatted as 'secretName:key'"),
+    # Documentation generation options
+    doc_source: Annotated[Optional[List[str]], typer.Option(
+        "--doc-source", "-d",
+        help="Documentation source (URL, PDF path, or JSON path). Can be specified multiple times."
+    )] = None,
+    auto_docs: bool = typer.Option(False, "--auto-docs", help="Auto-generate documentation from class/attribute names using AI"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
 ):
@@ -153,7 +162,48 @@ def generate_from_snowflake(
     else:
         console.print(f"\n[yellow]No relationships detected (no matching patterns found)[/yellow]")
 
-    # Step 2: Generate Pure code
+    # Step 2: Generate documentation (if requested)
+    docs = None
+    if doc_source or auto_docs:
+        console.print("\n[blue]Generating documentation...[/blue]")
+
+        # Collect all tables for documentation
+        all_tables = []
+        for schema_obj in db.schemas:
+            all_tables.extend(schema_obj.tables)
+
+        try:
+            doc_gen = DocGenerator()
+
+            if doc_source:
+                # Parse documentation sources
+                console.print(f"  Parsing {len(doc_source)} documentation source(s)...")
+                doc_sources = asyncio.run(doc_gen.parse_sources(doc_source))
+                for src in doc_sources:
+                    console.print(f"    - {src.source_type}: {src.source_path}")
+
+                # Generate docs with matching + fallback for unmatched
+                console.print("  Generating documentation from sources...")
+                docs = doc_gen.generate_class_docs(all_tables, doc_sources, generate_fallback=True)
+            else:
+                # Auto-docs: generate purely from names
+                console.print("  Generating documentation from class/attribute names...")
+                docs = doc_gen.generate_docs_from_names_only(all_tables)
+
+            # Display summary
+            matched_count = sum(1 for d in docs.values() if d.source == "matched")
+            inferred_count = len(docs) - matched_count
+            console.print(f"  [green]Documentation generated for {len(docs)} classes[/green]")
+            if doc_source:
+                console.print(f"    - Matched from sources: {matched_count}")
+                console.print(f"    - Inferred from names: {inferred_count}")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Documentation generation failed: {e}[/yellow]")
+            console.print("[yellow]Continuing without documentation...[/yellow]")
+            docs = None
+
+    # Step 3: Generate Pure code
     console.print("\n[blue]Generating Pure code...[/blue]")
 
     sf_account = account or os.environ.get("SNOWFLAKE_ACCOUNT", "")
@@ -170,7 +220,9 @@ def generate_from_snowflake(
         console.print(f"[cyan]Using AWS Secrets Manager: {aws_secret}[/cyan]")
         actual_private_key_ref = f"{aws_secret}:private_key"
         actual_passphrase_ref = f"{aws_secret}:passphrase"
-        actual_password_ref = f"{aws_secret}:password"
+        # For MiddleTierUserNamePassword, use the secret name directly (not :password)
+        # Legend will extract both username and password from the secret
+        actual_password_ref = aws_secret
 
     generator = PureCodeGenerator(db)
     artifacts = generator.generate_all(
@@ -183,6 +235,7 @@ def generate_from_snowflake(
         private_key_vault_ref=actual_private_key_ref,
         passphrase_vault_ref=actual_passphrase_ref,
         password_vault_ref=actual_password_ref,
+        docs=docs,
     )
 
     # Display generated artifacts

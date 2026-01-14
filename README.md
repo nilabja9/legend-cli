@@ -6,6 +6,7 @@ A powerful command-line tool for creating Legend artifacts using natural languag
 
 - **AI-Powered Code Generation**: Generate Pure code (classes, stores, connections, mappings) from natural language descriptions using Claude AI
 - **Automatic Model Generation**: Introspect Snowflake databases and automatically generate complete Legend models
+- **AI-Powered Documentation**: Automatically generate `doc.doc` descriptions for classes and attributes from external documentation sources (URLs, PDFs, JSON) or infer from naming conventions
 - **Automatic Relationship Detection**: Analyze schema to detect foreign key relationships and generate associations between classes
 - **Direct SDLC Integration**: Push generated code directly to Legend SDLC and commit changes
 - **Project & Workspace Management**: Create and manage Legend projects and workspaces from the CLI
@@ -174,6 +175,13 @@ legend-cli model from-snowflake <DATABASE_NAME> [OPTIONS]
 | `--region` | Snowflake region (default: us-east-1) |
 | `--dry-run` | Preview without pushing |
 | `--output, -o` | Save Pure files to directory |
+
+**Documentation Generation Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--doc-source, -d` | Documentation source (URL, PDF, or JSON). Can be specified multiple times |
+| `--auto-docs` | Auto-generate documentation from class/attribute names using AI |
 
 **Authentication Options (for Legend Connection):**
 
@@ -357,6 +365,77 @@ Mapping model::mapping::MyDatabaseMapping
 )
 ```
 
+### AI-Powered Documentation Generation
+
+Legend CLI can automatically generate documentation (`doc.doc` tagged values) for your classes and attributes using Claude AI. This documentation appears in Legend Studio and helps users understand your data model.
+
+#### How It Works
+
+1. **With Documentation Sources** (`--doc-source`): Parse external documentation (websites, PDFs, JSON files) and intelligently match content to your classes and attributes
+2. **Auto-Generation** (`--auto-docs`): Infer documentation from class/attribute names using common patterns (e.g., `user_id` → "Unique identifier for the user")
+3. **Hybrid Approach**: When using `--doc-source`, unmatched items automatically fall back to name-based inference
+
+#### Examples
+
+```bash
+# Auto-generate documentation from class/attribute names
+legend-cli model from-snowflake SEC_FILINGS_DEMO_DATA \
+  --schema CYBERSYN \
+  --auto-docs \
+  --dry-run
+
+# Use external documentation sources
+legend-cli model from-snowflake SEC_FILINGS_DEMO_DATA \
+  --schema CYBERSYN \
+  --doc-source https://docs.cybersyn.com/data-dictionary \
+  --doc-source /path/to/schema-docs.pdf \
+  --dry-run
+
+# Combine with JSON data dictionary
+legend-cli model from-snowflake MY_DATABASE \
+  --doc-source /path/to/data-dictionary.json \
+  --project-name "documented-model"
+```
+
+#### Supported Documentation Sources
+
+| Source Type | Example | Description |
+|-------------|---------|-------------|
+| **URL** | `https://docs.example.com/schema` | Web pages with table/column descriptions |
+| **PDF** | `/path/to/data-dictionary.pdf` | PDF documents with schema documentation |
+| **JSON** | `/path/to/metadata.json` | Structured data dictionaries |
+
+#### Generated Pure Code
+
+With documentation enabled, classes and properties include `doc.doc` tagged values:
+
+```pure
+Class {meta::pure::profiles::doc.doc = 'SEC filing report index containing metadata about submitted filings.'} model::domain::SecReportIndex
+{
+  {meta::pure::profiles::doc.doc = 'Central Index Key (SEC company identifier).'} cik: String[0..1];
+  {meta::pure::profiles::doc.doc = 'Accession Number (SEC filing identifier).'} adsh: String[0..1];
+  {meta::pure::profiles::doc.doc = 'Name of the reporting company.'} companyName: String[0..1];
+  {meta::pure::profiles::doc.doc = 'Date when the report was filed.'} reportDate: Date[0..1];
+  {meta::pure::profiles::doc.doc = 'Fiscal year for financial reporting.'} fiscalYear: Integer[0..1];
+}
+```
+
+#### Name-Based Inference Patterns
+
+When using `--auto-docs` or when documentation sources don't match, the CLI infers documentation from common naming patterns:
+
+| Pattern | Example | Generated Documentation |
+|---------|---------|------------------------|
+| `*_id` | `user_id` | "Unique identifier for the user." |
+| `*_date`, `*_at` | `created_at` | "Date when created occurred." |
+| `*_name` | `company_name` | "Name of the company." |
+| `*_count`, `*_num` | `order_count` | "Number of orders." |
+| `*_amount`, `*_value` | `total_amount` | "Value of total." |
+| `is_*`, `*_flag` | `is_active` | "Indicates whether active." |
+| `cik` | `cik` | "Central Index Key (SEC company identifier)." |
+| `adsh` | `adsh` | "Accession Number (SEC filing identifier)." |
+| `ein` | `ein` | "Employer Identification Number." |
+
 ### Snowflake Utilities
 
 ```bash
@@ -378,9 +457,16 @@ legend-cli/
 │   ├── engine_client.py     # Legend Engine API client
 │   ├── claude_client.py     # Claude AI integration
 │   ├── snowflake_client.py  # Snowflake introspection
+│   ├── doc_generator.py     # AI documentation generation
+│   ├── parsers/             # Document parsers
+│   │   ├── base.py          # Base parser classes
+│   │   ├── url_parser.py    # Web page parser
+│   │   ├── pdf_parser.py    # PDF document parser
+│   │   └── json_parser.py   # JSON data dictionary parser
 │   ├── prompts/
 │   │   ├── templates.py     # AI prompt templates
-│   │   └── examples.py      # Few-shot examples
+│   │   ├── examples.py      # Few-shot examples
+│   │   └── doc_templates.py # Documentation generation prompts
 │   └── commands/
 │       ├── project.py       # Project commands
 │       ├── workspace.py     # Workspace commands
@@ -402,6 +488,9 @@ legend-cli/
 - **anthropic**: Claude AI SDK
 - **pydantic**: Data validation
 - **rich**: Terminal formatting
+- **beautifulsoup4**: HTML parsing for URL documentation sources
+- **lxml**: Fast XML/HTML parser
+- **pypdf**: PDF document parsing
 - **snowflake-connector-python**: Snowflake connectivity (optional)
 
 ## Examples
