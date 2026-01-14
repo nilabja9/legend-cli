@@ -6,6 +6,7 @@ A powerful command-line tool for creating Legend artifacts using natural languag
 
 - **AI-Powered Code Generation**: Generate Pure code (classes, stores, connections, mappings) from natural language descriptions using Claude AI
 - **Automatic Model Generation**: Introspect Snowflake databases and automatically generate complete Legend models
+- **Automatic Relationship Detection**: Analyze schema to detect foreign key relationships and generate associations between classes
 - **Direct SDLC Integration**: Push generated code directly to Legend SDLC and commit changes
 - **Project & Workspace Management**: Create and manage Legend projects and workspaces from the CLI
 
@@ -205,11 +206,69 @@ legend-cli model from-snowflake PROD_DATABASE \
 
 | Artifact | Description |
 |----------|-------------|
-| **Store** | Database definition with all tables/views and columns |
-| **Classes** | One class per table with properties matching columns |
+| **Store** | Database definition with all tables/views, columns, and Join definitions |
+| **Classes** | One class per table with properties and association properties for relationships |
 | **Connection** | Snowflake connection with authentication config |
-| **Mapping** | Relational mapping from classes to tables |
+| **Mapping** | Relational mapping from classes to tables with association mappings |
 | **Runtime** | Runtime configuration linking mapping and connection |
+
+### Automatic Relationship Detection
+
+The CLI automatically analyzes your database schema to detect relationships between tables:
+
+**How it works:**
+- Detects foreign key patterns like `COMPANY_ID` → `COMPANY_INDEX` table
+- Recognizes common suffixes: `_ID`, `_KEY`, `_CODE`
+- Identifies index/reference tables: `*_INDEX`, `*_MASTER`, `*_DIM`, `*_LOOKUP`, `*_REF`
+- Creates association properties in classes for easy navigation
+- Generates Join definitions in the store
+- Adds association mappings that reference the joins
+
+**Example output:**
+```
+Detected Relationships:
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ Source                      ┃ Target                     ┃ Type        ┃ Property       ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ COMPANY_CHARACTERISTICS.CIK │ SEC_CIK_INDEX.CIK          │ many_to_one │ secCik         │
+│ COMPANY_INDEX.COMPANY_ID    │ COMPANY_INDEX.COMPANY_ID   │ many_to_one │ company        │
+│ SEC_REPORT_INDEX.CIK        │ SEC_CIK_INDEX.CIK          │ many_to_one │ secCik         │
+└─────────────────────────────┴────────────────────────────┴─────────────┴────────────────┘
+```
+
+**Generated Pure code includes:**
+
+```pure
+// Class with association property
+Class model::domain::SecReportIndex
+{
+  cik: String[0..1];
+  adsh: String[0..1];
+  // ... other properties
+  secCik: model::domain::SecCikIndex[0..1];  // Association
+}
+
+// Store with Join definition
+Database model::store::MyDatabase
+(
+  Schema CYBERSYN
+  (
+    Table SEC_REPORT_INDEX (...)
+    Table SEC_CIK_INDEX (...)
+  )
+  Join SEC_REPORT_INDEX_SEC_CIK_INDEX(CYBERSYN.SEC_REPORT_INDEX.CIK = CYBERSYN.SEC_CIK_INDEX.CIK)
+)
+
+// Mapping with association mapping
+Mapping model::mapping::MyDatabaseMapping
+(
+  model::domain::SecReportIndex: Relational
+  {
+    // ... property mappings
+    secCik: [model::store::MyDatabase]@SEC_REPORT_INDEX_SEC_CIK_INDEX
+  }
+)
+```
 
 ### Snowflake Utilities
 
