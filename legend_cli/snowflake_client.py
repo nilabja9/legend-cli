@@ -29,7 +29,7 @@ class Column:
         elif "FLOAT" in type_upper or "DOUBLE" in type_upper or "REAL" in type_upper:
             return "FLOAT"
         elif "BOOL" in type_upper:
-            return "BOOLEAN"
+            return "BIT"  # Legend Engine uses BIT for boolean columns
         elif "DATE" in type_upper and "TIME" not in type_upper:
             return "DATE"
         elif "TIMESTAMP" in type_upper or "DATETIME" in type_upper:
