@@ -540,7 +540,7 @@ class PureCodeGenerator:
         return "\n".join(lines)
 
     def generate_classes(self) -> str:
-        """Generate Pure class definitions with associations."""
+        """Generate Pure class definitions (without association properties - those come from Association elements)."""
         class_defs = []
 
         for schema in self.database.schemas:
@@ -549,28 +549,56 @@ class PureCodeGenerator:
                 lines = [f"Class {self.package_prefix}::domain::{class_name}"]
                 lines.append("{")
 
-                # Regular properties
+                # Regular properties only (no association properties)
                 for col in table.columns:
                     prop_name = table.get_property_name(col.name)
                     prop_type = col.to_pure_property_type()
                     multiplicity = "[0..1]" if col.is_nullable else "[1]"
                     lines.append(f"  {prop_name}: {prop_type}{multiplicity};")
 
-                # Association properties (from relationships)
-                added_associations = set()
-                for rel in table.relationships:
-                    if rel.property_name not in added_associations:
-                        target_class = self.table_to_class.get(rel.target_table)
-                        if target_class:
-                            # many_to_one means this side has [0..1] or [1]
-                            multiplicity = "[0..1]"
-                            lines.append(f"  {rel.property_name}: {self.package_prefix}::domain::{target_class}{multiplicity};")
-                            added_associations.add(rel.property_name)
-
                 lines.append("}")
                 class_defs.append("\n".join(lines))
 
         return "\n\n".join(class_defs)
+
+    def generate_associations(self) -> str:
+        """Generate Pure Association definitions."""
+        if not self.database.relationships:
+            return ""
+
+        association_defs = []
+        seen_associations = set()
+
+        for rel in self.database.relationships:
+            source_class = self.table_to_class.get(rel.source_table)
+            target_class = self.table_to_class.get(rel.target_table)
+
+            if not source_class or not target_class:
+                continue
+
+            # Create a unique key for this association to avoid duplicates
+            assoc_key = (source_class, target_class, rel.property_name)
+            if assoc_key in seen_associations:
+                continue
+            seen_associations.add(assoc_key)
+
+            # Association name combines both classes
+            assoc_name = f"{source_class}_{target_class}_{rel.property_name}"
+
+            # Generate reverse property name (plural of source class)
+            reverse_prop = rel.get_reverse_property_name(rel.source_table)
+
+            lines = [f"Association {self.package_prefix}::domain::{assoc_name}"]
+            lines.append("{")
+            # Source side (many) - the table that has the FK
+            lines.append(f"  {reverse_prop}: {self.package_prefix}::domain::{source_class}[*];")
+            # Target side (one) - the referenced table
+            lines.append(f"  {rel.property_name}: {self.package_prefix}::domain::{target_class}[0..1];")
+            lines.append("}")
+
+            association_defs.append("\n".join(lines))
+
+        return "\n\n".join(association_defs)
 
     def generate_connection(
         self,
@@ -639,7 +667,7 @@ class PureCodeGenerator:
 
                 block_lines.append(f"    ~mainTable [{store_path}]{schema.name}.{table.name}")
 
-                # Property mappings
+                # Property mappings only (no association mappings here)
                 prop_mappings = []
                 for col in table.columns:
                     prop_name = table.get_property_name(col.name)
@@ -647,24 +675,43 @@ class PureCodeGenerator:
                         f"    {prop_name}: [{store_path}]{schema.name}.{table.name}.{col.name}"
                     )
 
-                # Association mappings
-                added_associations = set()
-                for rel in table.relationships:
-                    if rel.property_name not in added_associations:
-                        target_table = self.database.get_table_by_name(rel.target_table)
-                        if target_table:
-                            # Create join mapping
-                            prop_mappings.append(
-                                f"    {rel.property_name}: [{store_path}]@{table.name}_{rel.target_table}"
-                            )
-                            added_associations.add(rel.property_name)
-
                 block_lines.append(",\n".join(prop_mappings))
                 block_lines.append("  }")
 
                 mapping_blocks.append("\n".join(block_lines))
 
         lines.append("\n".join(mapping_blocks))
+
+        # Add association mappings
+        if self.database.relationships:
+            lines.append("")
+            seen_associations = set()
+            for rel in self.database.relationships:
+                source_class = self.table_to_class.get(rel.source_table)
+                target_class = self.table_to_class.get(rel.target_table)
+
+                if not source_class or not target_class:
+                    continue
+
+                # Create a unique key for this association
+                assoc_key = (source_class, target_class, rel.property_name)
+                if assoc_key in seen_associations:
+                    continue
+                seen_associations.add(assoc_key)
+
+                assoc_name = f"{source_class}_{target_class}_{rel.property_name}"
+                assoc_path = f"{self.package_prefix}::domain::{assoc_name}"
+                store_path = f"{self.package_prefix}::store::{self.database.name}"
+                join_name = f"{rel.source_table}_{rel.target_table}"
+
+                lines.append(f"  {assoc_path}: Relational")
+                lines.append("  {")
+                lines.append(f"    AssociationMapping")
+                lines.append("    (")
+                lines.append(f"      {rel.property_name}: [{store_path}]@{join_name}")
+                lines.append("    )")
+                lines.append("  }")
+
         lines.append(")")
         return "\n".join(lines)
 
@@ -732,13 +779,20 @@ class PureCodeGenerator:
         username: Optional[str] = None,
     ) -> Dict[str, str]:
         """Generate all Pure code artifacts."""
-        return {
+        artifacts = {
             "store": self.generate_store_with_joins(),  # Use store with joins
             "classes": self.generate_classes(),
             "connection": self.generate_connection(account, warehouse, role, region, "public_key", username),
             "mapping": self.generate_mapping(),
             "runtime": self.generate_runtime(),
         }
+
+        # Add associations if there are relationships
+        associations = self.generate_associations()
+        if associations:
+            artifacts["associations"] = associations
+
+        return artifacts
 
     def get_relationship_summary(self) -> List[Dict[str, str]]:
         """Get a summary of detected relationships."""

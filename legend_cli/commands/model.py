@@ -169,6 +169,8 @@ def generate_from_snowflake(
 
     artifact_table.add_row("Store", f"model::store::{database}", str(artifacts['store'].count('\n') + 1))
     artifact_table.add_row("Classes", f"model::domain::*", str(artifacts['classes'].count('\n') + 1))
+    if 'associations' in artifacts:
+        artifact_table.add_row("Associations", f"model::domain::*", str(artifacts['associations'].count('\n') + 1))
     artifact_table.add_row("Connection", f"model::connection::{database}Connection", str(artifacts['connection'].count('\n') + 1))
     artifact_table.add_row("Mapping", f"model::mapping::{database}Mapping", str(artifacts['mapping'].count('\n') + 1))
     artifact_table.add_row("Runtime", f"model::runtime::{database}Runtime", str(artifacts['runtime'].count('\n') + 1))
@@ -224,13 +226,19 @@ def generate_from_snowflake(
     push_order = [
         ("store", "Store", f"Added {database} store definition"),
         ("classes", "Classes", f"Added domain classes for {database}"),
+        ("associations", "Associations", f"Added associations for {database}"),
         ("connection", "Connection", f"Added Snowflake connection for {database}"),
         ("mapping", "Mapping", f"Added mapping for {database}"),
         ("runtime", "Runtime", f"Added runtime for {database}"),
     ]
 
     success_count = 0
+    total_artifacts = 0
     for artifact_key, artifact_name, commit_msg in push_order:
+        # Skip if artifact doesn't exist (e.g., no associations when no relationships)
+        if artifact_key not in artifacts:
+            continue
+        total_artifacts += 1
         console.print(f"  Pushing {artifact_name}...", end=" ")
         if push_pure_code(
             artifacts[artifact_key],
@@ -248,7 +256,7 @@ def generate_from_snowflake(
     console.print(f"\n[bold green]Model generation complete![/bold green]")
     console.print(f"  Project ID: {actual_project_id}")
     console.print(f"  Workspace: {workspace_id}")
-    console.print(f"  Artifacts pushed: {success_count}/{len(push_order)}")
+    console.print(f"  Artifacts pushed: {success_count}/{total_artifacts}")
     console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
 
 
