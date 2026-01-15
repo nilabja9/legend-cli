@@ -61,7 +61,7 @@ def generate_from_snowflake(
     password: Optional[str] = typer.Option(None, "--password", help="Snowflake password (or SNOWFLAKE_PASSWORD env)"),
     warehouse: Optional[str] = typer.Option(None, "--warehouse", help="Snowflake warehouse (or SNOWFLAKE_WAREHOUSE env)"),
     role: str = typer.Option("ACCOUNTADMIN", "--role", "-r", help="Snowflake role"),
-    region: str = typer.Option("us-east-1", "--region", help="Snowflake region"),
+    region: Optional[str] = typer.Option(None, "--region", help="Snowflake region (omit for standard public endpoint)"),
     # Authentication options for Legend connection
     auth_type: str = typer.Option("keypair", "--auth-type", help="Auth type: 'keypair' (SnowflakePublic) or 'password' (MiddleTierUserNamePassword)"),
     legend_user: Optional[str] = typer.Option(None, "--legend-user", help="Snowflake username for Legend connection (defaults to --user)"),

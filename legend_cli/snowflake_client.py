@@ -647,7 +647,7 @@ class PureCodeGenerator:
         account: str,
         warehouse: str,
         role: str = "ACCOUNTADMIN",
-        region: str = "us-east-1",
+        region: Optional[str] = None,
         auth_type: str = "keypair",
         username: Optional[str] = None,
         private_key_vault_ref: str = "SNOWFLAKE_PRIVATE_KEY",
@@ -677,7 +677,8 @@ class PureCodeGenerator:
         lines.append(f"    name: '{self.database.name}';")
         lines.append(f"    account: '{account}';")
         lines.append(f"    warehouse: '{warehouse}';")
-        lines.append(f"    region: '{region}';")
+        # Region is required by Legend Engine; use empty string for standard public endpoint
+        lines.append(f"    region: '{region or ''}';")
         lines.append(f"    role: '{role}';")
         lines.append("  };")
 
@@ -834,7 +835,7 @@ class PureCodeGenerator:
         account: str,
         warehouse: str,
         role: str = "ACCOUNTADMIN",
-        region: str = "us-east-1",
+        region: Optional[str] = None,
         username: Optional[str] = None,
         auth_type: str = "keypair",
         private_key_vault_ref: str = "SNOWFLAKE_PRIVATE_KEY",
