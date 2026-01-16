@@ -5,7 +5,8 @@ A powerful command-line tool for creating Legend artifacts using natural languag
 ## Features
 
 - **AI-Powered Code Generation**: Generate Pure code (classes, stores, connections, mappings) from natural language descriptions using Claude AI
-- **Automatic Model Generation**: Introspect Snowflake databases and automatically generate complete Legend models
+- **Automatic Model Generation**: Introspect Snowflake and DuckDB databases and automatically generate complete Legend models
+- **DuckDB Support**: Connect Legend to local DuckDB databases via PostgreSQL wire protocol using Buena Vista proxy
 - **AI-Powered Documentation**: Automatically generate `doc.doc` descriptions for classes and attributes from external documentation sources (URLs, PDFs, JSON) or infer from naming conventions
 - **Automatic Relationship Detection**: Analyze schema to detect foreign key relationships and generate associations between classes
 - **Direct SDLC Integration**: Push generated code directly to Legend SDLC and commit changes
@@ -21,8 +22,14 @@ cd legend-cli
 # Install with base dependencies
 pip install -e .
 
-# Install with Snowflake support (for automatic model generation)
+# Install with Snowflake support
 pip install -e ".[snowflake]"
+
+# Install with DuckDB support
+pip install -e ".[duckdb]"
+
+# Install with all database support
+pip install -e ".[all]"
 ```
 
 ## Configuration
@@ -446,6 +453,194 @@ legend-cli model list-databases
 legend-cli model list-schemas MY_DATABASE
 ```
 
+### Automatic Model Generation from DuckDB
+
+Generate complete Legend models from local DuckDB databases using the PostgreSQL wire protocol.
+
+#### Prerequisites
+
+DuckDB is an embedded database, so Legend Engine cannot connect directly to a `.duckdb` file. You need to expose it via a PostgreSQL-compatible server using **Buena Vista**:
+
+```bash
+# Install Buena Vista (PostgreSQL wire protocol proxy for DuckDB)
+pip install buenavista
+
+# Start the proxy server (runs on port 5433 by default)
+python -m buenavista.examples.duckdb_postgres /path/to/your/database.duckdb
+```
+
+> **Note**: Keep the Buena Vista server running while Legend needs to query data.
+
+#### Docker Networking
+
+When Legend runs in Docker (e.g., Legend Omnibus), use `host.docker.internal` instead of `localhost` to connect from the container to your host machine:
+
+```bash
+# Legend in Docker connects to: host.docker.internal:5433
+# Your local machine runs Buena Vista on: localhost:5433
+```
+
+#### Command
+
+```bash
+legend-cli model from-duckdb <DATABASE_PATH> [OPTIONS]
+```
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--database-name, -n` | Name for the Legend model (defaults to filename) |
+| `--schema, -s` | Schema to introspect (default: main) |
+| `--project-name` | Name for new Legend project |
+| `--project-id, -p` | Use existing project ID |
+| `--workspace, -w` | Workspace ID (default: dev-workspace) |
+| `--host` | PostgreSQL proxy host (default: host.docker.internal) |
+| `--port` | PostgreSQL proxy port (default: 5433) |
+| `--dry-run` | Preview without pushing |
+| `--output, -o` | Save Pure files to directory |
+| `--doc-source, -d` | Documentation source (URL, PDF, or JSON) |
+| `--auto-docs` | Auto-generate documentation from names |
+
+#### Examples
+
+```bash
+# Basic usage - generate model from DuckDB file
+legend-cli model from-duckdb ./data/analytics.duckdb
+
+# Preview without pushing (dry run)
+legend-cli model from-duckdb ./my_data.duckdb --dry-run
+
+# Save generated files locally
+legend-cli model from-duckdb ./sales.duckdb --output ./generated_pure
+
+# Use specific schema and project
+legend-cli model from-duckdb ./warehouse.duckdb \
+  --schema analytics \
+  --project-id 5 \
+  --workspace my-workspace
+
+# Generate with AI documentation
+legend-cli model from-duckdb ./sec_filings.duckdb \
+  --auto-docs \
+  --project-name "sec-filings-model"
+
+# Full example with all options
+legend-cli model from-duckdb /path/to/data.duckdb \
+  --database-name "my_analytics" \
+  --schema main \
+  --host host.docker.internal \
+  --port 5433 \
+  --project-name "analytics-model" \
+  --auto-docs
+```
+
+#### Complete DuckDB + Legend Workflow
+
+Here's a complete example of setting up Legend with a DuckDB database:
+
+```bash
+# 1. Start Legend Omnibus (Docker)
+docker run -d \
+  --name legend-omnibus \
+  -p 6900:6900 \
+  finos/legend-omnibus:latest-slim
+
+# 2. Install dependencies
+pip install -e ".[duckdb]"
+pip install buenavista psycopg2-binary
+
+# 3. Start Buena Vista PostgreSQL proxy for your DuckDB file
+python -m buenavista.examples.duckdb_postgres ./my_database.duckdb &
+
+# 4. Verify the proxy is running
+python -c "
+import psycopg2
+conn = psycopg2.connect(host='localhost', port=5433, user='test', database='main')
+cur = conn.cursor()
+cur.execute('SELECT COUNT(*) FROM information_schema.tables')
+print(f'Tables found: {cur.fetchone()[0]}')
+conn.close()
+"
+
+# 5. Generate Legend model from DuckDB
+legend-cli model from-duckdb ./my_database.duckdb \
+  --project-name "my-duckdb-model" \
+  --auto-docs
+
+# 6. Open Legend Studio to view your model
+# http://localhost:6900/studio
+```
+
+#### DuckDB Connection Architecture
+
+```
+┌─────────────────────┐
+│   Legend Studio     │
+│  (Docker :6900)     │
+└─────────┬───────────┘
+          │
+┌─────────▼───────────┐
+│   Legend Engine     │
+│  PostgreSQL Client  │
+└─────────┬───────────┘
+          │ host.docker.internal:5433
+┌─────────▼───────────┐
+│   Buena Vista       │
+│  (PostgreSQL Wire   │
+│   Protocol Proxy)   │
+│   localhost:5433    │
+└─────────┬───────────┘
+          │
+┌─────────▼───────────┐
+│      DuckDB         │
+│  (Embedded DB)      │
+│  ./database.duckdb  │
+└─────────────────────┘
+```
+
+#### Generated Connection
+
+The CLI generates a PostgreSQL Static connection for DuckDB:
+
+```pure
+###Connection
+RelationalDatabaseConnection model::connection::myDatabaseConnection
+{
+  store: model::store::myDatabase;
+  type: Postgres;
+  specification: Static
+  {
+    name: 'myDatabase';
+    host: 'host.docker.internal';
+    port: 5433;
+  };
+  auth: Test
+  {
+  };
+}
+```
+
+#### DuckDB Utilities
+
+```bash
+# List tables in a DuckDB database
+legend-cli model list-duckdb-tables ./my_database.duckdb
+
+# List tables in specific schema
+legend-cli model list-duckdb-tables ./my_database.duckdb --schema main
+```
+
+#### Troubleshooting DuckDB
+
+| Issue | Solution |
+|-------|----------|
+| "Connection refused" | Ensure Buena Vista is running: `python -m buenavista.examples.duckdb_postgres ./db.duckdb` |
+| "Connection refused" from Legend | Use `host.docker.internal` instead of `localhost` (Docker networking) |
+| "Database is locked" | Close other connections (DBeaver, other scripts) to the DuckDB file |
+| "Module duckdb not found" | Install with `pip install -e ".[duckdb]"` |
+| Tables not showing | Check schema name with `list-duckdb-tables` command |
+
 ## Architecture
 
 ```
@@ -456,8 +651,18 @@ legend-cli/
 │   ├── sdlc_client.py       # Legend SDLC API client
 │   ├── engine_client.py     # Legend Engine API client
 │   ├── claude_client.py     # Claude AI integration
-│   ├── snowflake_client.py  # Snowflake introspection
+│   ├── snowflake_client.py  # Snowflake introspection (legacy)
 │   ├── doc_generator.py     # AI documentation generation
+│   ├── database/            # Database introspection modules
+│   │   ├── base.py          # Abstract DatabaseIntrospector
+│   │   ├── models.py        # Data models (Column, Table, Schema)
+│   │   ├── snowflake.py     # Snowflake introspector
+│   │   ├── duckdb.py        # DuckDB introspector
+│   │   ├── type_mappers.py  # Database type to Pure type mapping
+│   │   └── relationship.py  # Relationship detection
+│   ├── pure/                # Pure code generation
+│   │   ├── generator.py     # PureCodeGenerator
+│   │   └── connections.py   # Connection generators (Snowflake, DuckDB)
 │   ├── parsers/             # Document parsers
 │   │   ├── base.py          # Base parser classes
 │   │   ├── url_parser.py    # Web page parser
@@ -479,7 +684,8 @@ legend-cli/
 - Python 3.9+
 - Legend Omnibus or Legend SDLC running locally
 - Anthropic API key (for AI features)
-- Snowflake account (for model generation)
+- Snowflake account (for Snowflake model generation)
+- DuckDB file (for DuckDB model generation)
 
 ## Dependencies
 
@@ -492,6 +698,9 @@ legend-cli/
 - **lxml**: Fast XML/HTML parser
 - **pypdf**: PDF document parsing
 - **snowflake-connector-python**: Snowflake connectivity (optional)
+- **duckdb**: DuckDB connectivity (optional)
+- **buenavista**: PostgreSQL wire protocol proxy for DuckDB (external, for runtime)
+- **psycopg2-binary**: PostgreSQL driver for testing connections (optional)
 
 ## Examples
 

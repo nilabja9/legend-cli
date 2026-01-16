@@ -120,7 +120,7 @@ class DuckDBConnectionGenerator(ConnectionGenerator):
         store_path: str,
         package_prefix: str = "model",
         database_path: Optional[str] = None,
-        host: str = "localhost",
+        host: str = "host.docker.internal",
         port: int = 5433,
         use_postgres: bool = True,
         test_data_sqls: Optional[List[str]] = None,
@@ -133,7 +133,7 @@ class DuckDBConnectionGenerator(ConnectionGenerator):
             store_path: Full path to the store definition
             package_prefix: Package prefix for Pure code
             database_path: Path to DuckDB file (optional, for documentation)
-            host: PostgreSQL server host (default: localhost)
+            host: PostgreSQL server host (default: host.docker.internal for Docker)
             port: PostgreSQL server port (default: 5433 for Buena Vista)
             use_postgres: Use PostgreSQL connection (default: True)
             test_data_sqls: Optional SQL statements for test data setup
