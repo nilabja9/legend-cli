@@ -5,6 +5,7 @@ including store, classes, associations, connections, mappings, and runtimes.
 """
 
 from .generator import PureCodeGenerator
+from .enhanced_generator import EnhancedPureCodeGenerator
 from .connections import (
     ConnectionGenerator,
     SnowflakeConnectionGenerator,
@@ -13,6 +14,7 @@ from .connections import (
 
 __all__ = [
     "PureCodeGenerator",
+    "EnhancedPureCodeGenerator",
     "ConnectionGenerator",
     "SnowflakeConnectionGenerator",
     "DuckDBConnectionGenerator",

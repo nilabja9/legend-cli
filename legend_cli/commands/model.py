@@ -13,9 +13,17 @@ from rich.table import Table
 # Use new modular structure
 from ..database import SnowflakeIntrospector, DuckDBIntrospector
 from ..pure import PureCodeGenerator, SnowflakeConnectionGenerator, DuckDBConnectionGenerator
+from ..pure.enhanced_generator import EnhancedPureCodeGenerator
 from ..sdlc_client import SDLCClient
 from ..engine_client import EngineClient
 from ..doc_generator import DocGenerator
+from ..analysis import (
+    SchemaAnalyzer,
+    AnalysisContext,
+    AnalysisOptions,
+    analyze_schema,
+)
+from ..parsers.sql_parser import parse_sql_files
 
 app = typer.Typer(help="Generate complete Legend models from database schemas")
 console = Console()
@@ -82,6 +90,18 @@ def generate_from_snowflake(
     auto_docs: bool = typer.Option(False, "--auto-docs", help="Auto-generate documentation from class/attribute names using AI"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
+    # Enhanced model generation options
+    enhanced: bool = typer.Option(False, "--enhanced", "-e", help="Enable LLM-powered advanced model generation (inheritance, enums, constraints, derived properties)"),
+    sql_source: Annotated[Optional[List[str]], typer.Option(
+        "--sql-source",
+        help="SQL files or directories for pattern analysis. Can be specified multiple times."
+    )] = None,
+    analyze_only: bool = typer.Option(False, "--analyze-only", help="Show analysis suggestions without generating code"),
+    confidence: float = typer.Option(0.7, "--confidence", help="Minimum confidence threshold for suggestions (0.0-1.0)"),
+    hierarchies: bool = typer.Option(True, "--hierarchies/--no-hierarchies", help="Detect class inheritance hierarchies"),
+    enums: bool = typer.Option(True, "--enums/--no-enums", help="Detect enumeration candidates"),
+    constraints: bool = typer.Option(True, "--constraints/--no-constraints", help="Generate data constraints"),
+    derived: bool = typer.Option(True, "--derived/--no-derived", help="Detect derived properties"),
 ):
     """
     Generate a complete Legend model from a Snowflake database.
@@ -91,8 +111,16 @@ def generate_from_snowflake(
     2. Create a new Legend project (or use existing)
     3. Generate and commit: Store, Classes, Connection, Mapping, Runtime
 
-    Example:
+    With --enhanced flag, also:
+    - Detect class inheritance hierarchies
+    - Generate enumerations from reference tables and low-cardinality columns
+    - Add data quality constraints
+    - Create derived (computed) properties
+
+    Examples:
         legend-cli model from-snowflake FACTSET_MINUTE_BARS --schema TICK_HISTORY
+        legend-cli model from-snowflake DB --enhanced --analyze-only
+        legend-cli model from-snowflake DB --enhanced --sql-source ./queries/ --confidence 0.8
     """
     console.print(Panel(
         f"[bold blue]Generating Legend Model from Snowflake[/bold blue]\n"
@@ -205,7 +233,75 @@ def generate_from_snowflake(
             console.print("[yellow]Continuing without documentation...[/yellow]")
             docs = None
 
-    # Step 3: Generate Pure code
+    # Step 3: Enhanced analysis (if requested)
+    enhanced_spec = None
+    if enhanced:
+        console.print("\n[blue]Running enhanced schema analysis...[/blue]")
+
+        # Parse SQL sources if provided
+        sql_queries = None
+        if sql_source:
+            console.print(f"  Parsing {len(sql_source)} SQL source(s)...")
+            sql_queries = parse_sql_files(sql_source)
+            console.print(f"    Found {len(sql_queries)} SQL queries")
+
+        # Combine documentation content
+        doc_content = None
+        if docs:
+            doc_parts = []
+            for class_name, class_doc in docs.items():
+                doc_parts.append(f"{class_name}: {getattr(class_doc, 'class_doc', '')}")
+            doc_content = "\n".join(doc_parts)
+
+        # Configure analysis options
+        analysis_options = AnalysisOptions(
+            detect_hierarchies=hierarchies,
+            detect_enums=enums,
+            detect_constraints=constraints,
+            detect_derived=derived,
+            use_llm=True,
+            confidence_threshold=confidence,
+        )
+
+        # Run analysis
+        try:
+            analyzer = SchemaAnalyzer(options=analysis_options)
+            context = AnalysisContext(
+                database=db,
+                documentation=doc_content,
+                sql_queries=sql_queries,
+            )
+            enhanced_spec = analyzer.analyze(context)
+
+            # Display analysis results
+            console.print(f"\n[green]Enhanced Analysis Results:[/green]")
+            console.print(f"  Hierarchies detected: {len(enhanced_spec.hierarchies)}")
+            for h in enhanced_spec.hierarchies[:5]:
+                console.print(f"    - {h.base_class_name} <- {', '.join(h.derived_classes[:3])} (confidence: {h.confidence:.2f})")
+
+            console.print(f"  Enumerations detected: {len(enhanced_spec.enumerations)}")
+            for e in enhanced_spec.enumerations[:5]:
+                console.print(f"    - {e.name}: {len(e.values)} values (confidence: {e.confidence:.2f})")
+
+            console.print(f"  Constraints suggested: {len(enhanced_spec.constraints)}")
+            for c in enhanced_spec.constraints[:5]:
+                console.print(f"    - {c.class_name}.{c.constraint_name} (confidence: {c.confidence:.2f})")
+
+            console.print(f"  Derived properties suggested: {len(enhanced_spec.derived_properties)}")
+            for d in enhanced_spec.derived_properties[:5]:
+                console.print(f"    - {d.class_name}.{d.property_name}: {d.return_type} (confidence: {d.confidence:.2f})")
+
+            if analyze_only:
+                console.print("\n[yellow]Analysis only mode - not generating code[/yellow]")
+                console.print("\n" + enhanced_spec.summary())
+                return
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Enhanced analysis failed: {e}[/yellow]")
+            console.print("[yellow]Continuing with basic generation...[/yellow]")
+            enhanced_spec = None
+
+    # Step 4: Generate Pure code
     console.print("\n[blue]Generating Pure code...[/blue]")
 
     sf_account = account or os.environ.get("SNOWFLAKE_ACCOUNT", "")
@@ -243,17 +339,29 @@ def generate_from_snowflake(
         password_vault_ref=actual_password_ref,
     )
 
-    generator = PureCodeGenerator(db)
-    artifacts = generator.generate_all(
-        connection_code=connection_code,
-        docs=docs,
-    )
+    # Use enhanced generator if we have enhanced spec
+    if enhanced_spec:
+        generator = EnhancedPureCodeGenerator(db, enhanced_spec=enhanced_spec)
+        artifacts = generator.generate_all_enhanced(
+            connection_code=connection_code,
+            docs=docs,
+        )
+    else:
+        generator = PureCodeGenerator(db)
+        artifacts = generator.generate_all(
+            connection_code=connection_code,
+            docs=docs,
+        )
 
     # Display generated artifacts
     artifact_table = Table(title="Generated Artifacts")
     artifact_table.add_column("Artifact", style="cyan")
     artifact_table.add_column("Path", style="green")
     artifact_table.add_column("Lines", style="magenta")
+
+    # Add enumerations if present (enhanced mode)
+    if 'enumerations' in artifacts:
+        artifact_table.add_row("Enumerations", f"model::domain::*", str(artifacts['enumerations'].count('\n') + 1))
 
     artifact_table.add_row("Store", f"model::store::{database}", str(artifacts['store'].count('\n') + 1))
     artifact_table.add_row("Classes", f"model::domain::*", str(artifacts['classes'].count('\n') + 1))
@@ -311,6 +419,7 @@ def generate_from_snowflake(
     console.print(f"\n[blue]Pushing artifacts to project {actual_project_id}...[/blue]")
 
     push_order = [
+        ("enumerations", "Enumerations", f"Added enumerations for {database}"),
         ("store", "Store", f"Added {database} store definition"),
         ("classes", "Classes", f"Added domain classes for {database}"),
         ("associations", "Associations", f"Added associations for {database}"),
@@ -447,6 +556,18 @@ def generate_from_duckdb(
     auto_docs: bool = typer.Option(False, "--auto-docs", help="Auto-generate documentation from class/attribute names using AI"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
     output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
+    # Enhanced model generation options
+    enhanced: bool = typer.Option(False, "--enhanced", "-e", help="Enable LLM-powered advanced model generation (inheritance, enums, constraints, derived properties)"),
+    sql_source: Annotated[Optional[List[str]], typer.Option(
+        "--sql-source",
+        help="SQL files or directories for pattern analysis. Can be specified multiple times."
+    )] = None,
+    analyze_only: bool = typer.Option(False, "--analyze-only", help="Show analysis suggestions without generating code"),
+    confidence: float = typer.Option(0.7, "--confidence", help="Minimum confidence threshold for suggestions (0.0-1.0)"),
+    hierarchies: bool = typer.Option(True, "--hierarchies/--no-hierarchies", help="Detect class inheritance hierarchies"),
+    enums: bool = typer.Option(True, "--enums/--no-enums", help="Detect enumeration candidates"),
+    constraints: bool = typer.Option(True, "--constraints/--no-constraints", help="Generate data constraints"),
+    derived: bool = typer.Option(True, "--derived/--no-derived", help="Detect derived properties"),
 ):
     """
     Generate a complete Legend model from a DuckDB database.
@@ -456,10 +577,17 @@ def generate_from_duckdb(
     2. Create a new Legend project (or use existing)
     3. Generate and commit: Store, Classes, Associations, Connection, Mapping, Runtime
 
+    With --enhanced flag, also:
+    - Detect class inheritance hierarchies
+    - Generate enumerations from reference tables and low-cardinality columns
+    - Add data quality constraints
+    - Create derived (computed) properties
+
     Examples:
         legend-cli model from-duckdb ./my_database.duckdb
         legend-cli model from-duckdb ./analytics.duckdb --schema main --name analytics_model
         legend-cli model from-duckdb :memory: --name test_db --dry-run
+        legend-cli model from-duckdb ./db.duckdb --enhanced --analyze-only
     """
     # Determine the actual path and database name
     actual_path = database_path
@@ -576,7 +704,75 @@ def generate_from_duckdb(
             console.print("[yellow]Continuing without documentation...[/yellow]")
             docs = None
 
-    # Step 3: Generate Pure code
+    # Step 3: Enhanced analysis (if requested)
+    enhanced_spec = None
+    if enhanced:
+        console.print("\n[blue]Running enhanced schema analysis...[/blue]")
+
+        # Parse SQL sources if provided
+        sql_queries = None
+        if sql_source:
+            console.print(f"  Parsing {len(sql_source)} SQL source(s)...")
+            sql_queries = parse_sql_files(sql_source)
+            console.print(f"    Found {len(sql_queries)} SQL queries")
+
+        # Combine documentation content
+        doc_content = None
+        if docs:
+            doc_parts = []
+            for class_name, class_doc in docs.items():
+                doc_parts.append(f"{class_name}: {getattr(class_doc, 'class_doc', '')}")
+            doc_content = "\n".join(doc_parts)
+
+        # Configure analysis options
+        analysis_options = AnalysisOptions(
+            detect_hierarchies=hierarchies,
+            detect_enums=enums,
+            detect_constraints=constraints,
+            detect_derived=derived,
+            use_llm=True,
+            confidence_threshold=confidence,
+        )
+
+        # Run analysis
+        try:
+            analyzer = SchemaAnalyzer(options=analysis_options)
+            context = AnalysisContext(
+                database=db,
+                documentation=doc_content,
+                sql_queries=sql_queries,
+            )
+            enhanced_spec = analyzer.analyze(context)
+
+            # Display analysis results
+            console.print(f"\n[green]Enhanced Analysis Results:[/green]")
+            console.print(f"  Hierarchies detected: {len(enhanced_spec.hierarchies)}")
+            for h in enhanced_spec.hierarchies[:5]:
+                console.print(f"    - {h.base_class_name} <- {', '.join(h.derived_classes[:3])} (confidence: {h.confidence:.2f})")
+
+            console.print(f"  Enumerations detected: {len(enhanced_spec.enumerations)}")
+            for e in enhanced_spec.enumerations[:5]:
+                console.print(f"    - {e.name}: {len(e.values)} values (confidence: {e.confidence:.2f})")
+
+            console.print(f"  Constraints suggested: {len(enhanced_spec.constraints)}")
+            for c in enhanced_spec.constraints[:5]:
+                console.print(f"    - {c.class_name}.{c.constraint_name} (confidence: {c.confidence:.2f})")
+
+            console.print(f"  Derived properties suggested: {len(enhanced_spec.derived_properties)}")
+            for d in enhanced_spec.derived_properties[:5]:
+                console.print(f"    - {d.class_name}.{d.property_name}: {d.return_type} (confidence: {d.confidence:.2f})")
+
+            if analyze_only:
+                console.print("\n[yellow]Analysis only mode - not generating code[/yellow]")
+                console.print("\n" + enhanced_spec.summary())
+                return
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Enhanced analysis failed: {e}[/yellow]")
+            console.print("[yellow]Continuing with basic generation...[/yellow]")
+            enhanced_spec = None
+
+    # Step 4: Generate Pure code
     console.print("\n[blue]Generating Pure code...[/blue]")
 
     # Generate connection using DuckDB connection generator (LocalH2)
@@ -588,17 +784,29 @@ def generate_from_duckdb(
         database_path=database_path,
     )
 
-    generator = PureCodeGenerator(db)
-    artifacts = generator.generate_all(
-        connection_code=connection_code,
-        docs=docs,
-    )
+    # Use enhanced generator if we have enhanced spec
+    if enhanced_spec:
+        generator = EnhancedPureCodeGenerator(db, enhanced_spec=enhanced_spec)
+        artifacts = generator.generate_all_enhanced(
+            connection_code=connection_code,
+            docs=docs,
+        )
+    else:
+        generator = PureCodeGenerator(db)
+        artifacts = generator.generate_all(
+            connection_code=connection_code,
+            docs=docs,
+        )
 
     # Display generated artifacts
     artifact_table = Table(title="Generated Artifacts")
     artifact_table.add_column("Artifact", style="cyan")
     artifact_table.add_column("Path", style="green")
     artifact_table.add_column("Lines", style="magenta")
+
+    # Add enumerations if present (enhanced mode)
+    if 'enumerations' in artifacts:
+        artifact_table.add_row("Enumerations", f"model::domain::*", str(artifacts['enumerations'].count('\n') + 1))
 
     artifact_table.add_row("Store", f"model::store::{db.name}", str(artifacts['store'].count('\n') + 1))
     artifact_table.add_row("Classes", f"model::domain::*", str(artifacts['classes'].count('\n') + 1))
@@ -656,6 +864,7 @@ def generate_from_duckdb(
     console.print(f"\n[blue]Pushing artifacts to project {actual_project_id}...[/blue]")
 
     push_order = [
+        ("enumerations", "Enumerations", f"Added enumerations for {db.name}"),
         ("store", "Store", f"Added {db.name} store definition"),
         ("classes", "Classes", f"Added domain classes for {db.name}"),
         ("associations", "Associations", f"Added associations for {db.name}"),
