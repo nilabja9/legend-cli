@@ -1,6 +1,7 @@
-"""Model generation commands - creates complete Legend model from Snowflake database."""
+"""Model generation commands - creates complete Legend model from database schemas."""
 
 import asyncio
+import os
 import typer
 from typing import Optional, List
 from typing_extensions import Annotated
@@ -8,7 +9,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-from ..snowflake_client import SnowflakeIntrospector, PureCodeGenerator
+
+# Use new modular structure
+from ..database import SnowflakeIntrospector, DuckDBIntrospector
+from ..pure import PureCodeGenerator, SnowflakeConnectionGenerator, DuckDBConnectionGenerator
 from ..sdlc_client import SDLCClient
 from ..engine_client import EngineClient
 from ..doc_generator import DocGenerator
@@ -90,8 +94,6 @@ def generate_from_snowflake(
     Example:
         legend-cli model from-snowflake FACTSET_MINUTE_BARS --schema TICK_HISTORY
     """
-    import os
-
     console.print(Panel(
         f"[bold blue]Generating Legend Model from Snowflake[/bold blue]\n"
         f"Database: {database}\n"
@@ -224,17 +226,26 @@ def generate_from_snowflake(
         # Legend will extract both username and password from the secret
         actual_password_ref = aws_secret
 
-    generator = PureCodeGenerator(db)
-    artifacts = generator.generate_all(
+    # Generate connection using connection generator
+    conn_generator = SnowflakeConnectionGenerator()
+    connection_code = conn_generator.generate(
+        database_name=database,
+        store_path=f"model::store::{database}",
+        package_prefix="model",
         account=sf_account,
         warehouse=sf_warehouse,
         role=role,
         region=region,
-        username=connection_user,
         auth_type=auth_type,
+        username=connection_user,
         private_key_vault_ref=actual_private_key_ref,
         passphrase_vault_ref=actual_passphrase_ref,
         password_vault_ref=actual_password_ref,
+    )
+
+    generator = PureCodeGenerator(db)
+    artifacts = generator.generate_all(
+        connection_code=connection_code,
         docs=docs,
     )
 
@@ -256,7 +267,6 @@ def generate_from_snowflake(
 
     # Save to files if requested
     if output_dir:
-        import os
         os.makedirs(output_dir, exist_ok=True)
 
         for name, code in artifacts.items():
@@ -414,6 +424,297 @@ def list_schemas(
 
     except ImportError:
         console.print("[red]snowflake-connector-python required. Install with: pip install snowflake-connector-python[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("from-duckdb")
+def generate_from_duckdb(
+    database_path: str = typer.Argument(..., help="Path to DuckDB database file (or :memory: for in-memory)"),
+    database_name: Optional[str] = typer.Option(None, "--name", "-n", help="Name for the Legend model (defaults to filename)"),
+    schema: Optional[str] = typer.Option(None, "--schema", "-s", help="Specific schema to introspect (default: main)"),
+    project_name: Optional[str] = typer.Option(None, "--project-name", help="Name for new Legend project"),
+    project_id: Optional[str] = typer.Option(None, "--project-id", "-p", help="Existing project ID to use"),
+    workspace_id: str = typer.Option("dev-workspace", "--workspace", "-w", help="Workspace ID"),
+    connection_string: Optional[str] = typer.Option(None, "--connection-string", help="DuckDB connection string (alternative to path)"),
+    # Documentation generation options
+    doc_source: Annotated[Optional[List[str]], typer.Option(
+        "--doc-source", "-d",
+        help="Documentation source (URL, PDF path, or JSON path). Can be specified multiple times."
+    )] = None,
+    auto_docs: bool = typer.Option(False, "--auto-docs", help="Auto-generate documentation from class/attribute names using AI"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Generate code but don't push to SDLC"),
+    output_dir: Optional[str] = typer.Option(None, "--output", "-o", help="Save generated Pure files to directory"),
+):
+    """
+    Generate a complete Legend model from a DuckDB database.
+
+    This command will:
+    1. Connect to DuckDB and introspect the database schema
+    2. Create a new Legend project (or use existing)
+    3. Generate and commit: Store, Classes, Associations, Connection, Mapping, Runtime
+
+    Examples:
+        legend-cli model from-duckdb ./my_database.duckdb
+        legend-cli model from-duckdb ./analytics.duckdb --schema main --name analytics_model
+        legend-cli model from-duckdb :memory: --name test_db --dry-run
+    """
+    # Determine the actual path and database name
+    actual_path = database_path
+    if connection_string and not database_path:
+        actual_path = None
+
+    console.print(Panel(
+        f"[bold blue]Generating Legend Model from DuckDB[/bold blue]\n"
+        f"Database: {database_path}\n"
+        f"Schema: {schema or 'All schemas'}",
+        title="Legend Model Generator"
+    ))
+
+    # Step 1: Connect to DuckDB and introspect
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Connecting to DuckDB...", total=None)
+
+        try:
+            introspector = DuckDBIntrospector(
+                database_path=actual_path,
+                connection_string=connection_string,
+                read_only=True,
+            )
+
+            progress.update(task, description="Introspecting database schema...")
+            db_name_to_use = database_name or introspector.get_database_name()
+            db = introspector.introspect_database(database=db_name_to_use, schema_filter=schema)
+            introspector.close()
+
+        except ImportError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Error connecting to DuckDB: {e}[/red]")
+            raise typer.Exit(1)
+
+    # Display discovered schema
+    console.print(f"\n[green]Discovered Schema:[/green]")
+    for schema_obj in db.schemas:
+        console.print(f"  Schema: [cyan]{schema_obj.name}[/cyan]")
+        for table in schema_obj.tables:
+            console.print(f"    - {table.name} ({len(table.columns)} columns)")
+
+    total_tables = sum(len(s.tables) for s in db.schemas)
+    if total_tables == 0:
+        console.print("[yellow]No tables found in the specified database/schema[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Total: {total_tables} tables across {len(db.schemas)} schema(s)[/bold]")
+
+    # Display detected relationships
+    if db.relationships:
+        console.print(f"\n[green]Detected Relationships:[/green]")
+        rel_table = Table(title="Detected Relationships")
+        rel_table.add_column("Source", style="cyan")
+        rel_table.add_column("Target", style="green")
+        rel_table.add_column("Type", style="yellow")
+        rel_table.add_column("Property", style="magenta")
+
+        for rel in db.relationships:
+            rel_table.add_row(
+                f"{rel.source_table}.{rel.source_column}",
+                f"{rel.target_table}.{rel.target_column}",
+                rel.relationship_type,
+                rel.property_name
+            )
+        console.print(rel_table)
+        console.print(f"[bold]Total: {len(db.relationships)} relationships detected[/bold]")
+    else:
+        console.print(f"\n[yellow]No relationships detected (no matching patterns found)[/yellow]")
+
+    # Step 2: Generate documentation (if requested)
+    docs = None
+    if doc_source or auto_docs:
+        console.print("\n[blue]Generating documentation...[/blue]")
+
+        # Collect all tables for documentation
+        all_tables = []
+        for schema_obj in db.schemas:
+            all_tables.extend(schema_obj.tables)
+
+        try:
+            doc_gen = DocGenerator()
+
+            if doc_source:
+                # Parse documentation sources
+                console.print(f"  Parsing {len(doc_source)} documentation source(s)...")
+                doc_sources = asyncio.run(doc_gen.parse_sources(doc_source))
+                for src in doc_sources:
+                    console.print(f"    - {src.source_type}: {src.source_path}")
+
+                # Generate docs with matching + fallback for unmatched
+                console.print("  Generating documentation from sources...")
+                docs = doc_gen.generate_class_docs(all_tables, doc_sources, generate_fallback=True)
+            else:
+                # Auto-docs: generate purely from names
+                console.print("  Generating documentation from class/attribute names...")
+                docs = doc_gen.generate_docs_from_names_only(all_tables)
+
+            # Display summary
+            matched_count = sum(1 for d in docs.values() if d.source == "matched")
+            inferred_count = len(docs) - matched_count
+            console.print(f"  [green]Documentation generated for {len(docs)} classes[/green]")
+            if doc_source:
+                console.print(f"    - Matched from sources: {matched_count}")
+                console.print(f"    - Inferred from names: {inferred_count}")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Documentation generation failed: {e}[/yellow]")
+            console.print("[yellow]Continuing without documentation...[/yellow]")
+            docs = None
+
+    # Step 3: Generate Pure code
+    console.print("\n[blue]Generating Pure code...[/blue]")
+
+    # Generate connection using DuckDB connection generator (LocalH2)
+    conn_generator = DuckDBConnectionGenerator()
+    connection_code = conn_generator.generate(
+        database_name=db.name,
+        store_path=f"model::store::{db.name}",
+        package_prefix="model",
+        database_path=database_path,
+    )
+
+    generator = PureCodeGenerator(db)
+    artifacts = generator.generate_all(
+        connection_code=connection_code,
+        docs=docs,
+    )
+
+    # Display generated artifacts
+    artifact_table = Table(title="Generated Artifacts")
+    artifact_table.add_column("Artifact", style="cyan")
+    artifact_table.add_column("Path", style="green")
+    artifact_table.add_column("Lines", style="magenta")
+
+    artifact_table.add_row("Store", f"model::store::{db.name}", str(artifacts['store'].count('\n') + 1))
+    artifact_table.add_row("Classes", f"model::domain::*", str(artifacts['classes'].count('\n') + 1))
+    if 'associations' in artifacts:
+        artifact_table.add_row("Associations", f"model::domain::*", str(artifacts['associations'].count('\n') + 1))
+    artifact_table.add_row("Connection", f"model::connection::{db.name}Connection", str(artifacts['connection'].count('\n') + 1))
+    artifact_table.add_row("Mapping", f"model::mapping::{db.name}Mapping", str(artifacts['mapping'].count('\n') + 1))
+    artifact_table.add_row("Runtime", f"model::runtime::{db.name}Runtime", str(artifacts['runtime'].count('\n') + 1))
+
+    console.print(artifact_table)
+
+    # Save to files if requested
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+        for name, code in artifacts.items():
+            file_path = os.path.join(output_dir, f"{name}.pure")
+            with open(file_path, "w") as f:
+                f.write(code)
+            console.print(f"[green]Saved {file_path}[/green]")
+
+    if dry_run:
+        console.print("\n[yellow]Dry run - not pushing to SDLC[/yellow]")
+        console.print("\n[bold]Generated Store:[/bold]")
+        console.print(artifacts['store'][:1000] + "..." if len(artifacts['store']) > 1000 else artifacts['store'])
+        return
+
+    # Step 4: Create or use existing project
+    with SDLCClient() as sdlc:
+        if project_id:
+            console.print(f"\n[blue]Using existing project: {project_id}[/blue]")
+            actual_project_id = project_id
+        else:
+            proj_name = project_name or f"{db.name.lower().replace('_', '-')}-model"
+            console.print(f"\n[blue]Creating project: {proj_name}[/blue]")
+            try:
+                project = sdlc.create_project(
+                    name=proj_name,
+                    description=f"Legend model for DuckDB database {db.name}",
+                )
+                actual_project_id = str(project.get("projectId"))
+                console.print(f"[green]Created project with ID: {actual_project_id}[/green]")
+            except Exception as e:
+                console.print(f"[red]Error creating project: {e}[/red]")
+                raise typer.Exit(1)
+
+        # Create workspace if needed
+        try:
+            sdlc.get_workspace(actual_project_id, workspace_id)
+        except Exception:
+            console.print(f"[blue]Creating workspace: {workspace_id}[/blue]")
+            sdlc.create_workspace(actual_project_id, workspace_id)
+
+    # Step 5: Push artifacts in order
+    console.print(f"\n[blue]Pushing artifacts to project {actual_project_id}...[/blue]")
+
+    push_order = [
+        ("store", "Store", f"Added {db.name} store definition"),
+        ("classes", "Classes", f"Added domain classes for {db.name}"),
+        ("associations", "Associations", f"Added associations for {db.name}"),
+        ("connection", "Connection", f"Added DuckDB connection for {db.name}"),
+        ("mapping", "Mapping", f"Added mapping for {db.name}"),
+        ("runtime", "Runtime", f"Added runtime for {db.name}"),
+    ]
+
+    success_count = 0
+    total_artifacts = 0
+    for artifact_key, artifact_name, commit_msg in push_order:
+        # Skip if artifact doesn't exist (e.g., no associations when no relationships)
+        if artifact_key not in artifacts:
+            continue
+        total_artifacts += 1
+        console.print(f"  Pushing {artifact_name}...", end=" ")
+        if push_pure_code(
+            artifacts[artifact_key],
+            actual_project_id,
+            workspace_id,
+            commit_msg,
+            artifact_name,
+        ):
+            console.print("[green]OK[/green]")
+            success_count += 1
+        else:
+            console.print("[red]FAILED[/red]")
+
+    # Summary
+    console.print(f"\n[bold green]Model generation complete![/bold green]")
+    console.print(f"  Project ID: {actual_project_id}")
+    console.print(f"  Workspace: {workspace_id}")
+    console.print(f"  Artifacts pushed: {success_count}/{total_artifacts}")
+    console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
+
+
+@app.command("list-duckdb-tables")
+def list_duckdb_tables(
+    database_path: str = typer.Argument(..., help="Path to DuckDB database file"),
+    schema: Optional[str] = typer.Option(None, "--schema", "-s", help="Filter to specific schema"),
+):
+    """List tables in a DuckDB database."""
+    try:
+        introspector = DuckDBIntrospector(database_path=database_path, read_only=True)
+        db = introspector.introspect_database(schema_filter=schema, detect_relationships=False)
+        introspector.close()
+
+        for schema_obj in db.schemas:
+            table_display = Table(title=f"Tables in schema: {schema_obj.name}")
+            table_display.add_column("Table", style="cyan")
+            table_display.add_column("Columns", style="green")
+
+            for tbl in schema_obj.tables:
+                table_display.add_row(tbl.name, str(len(tbl.columns)))
+
+            console.print(table_display)
+
+    except ImportError:
+        console.print("[red]duckdb required. Install with: pip install duckdb[/red]")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
