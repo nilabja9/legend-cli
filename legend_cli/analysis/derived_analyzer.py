@@ -60,6 +60,9 @@ class DerivedAnalyzer:
     }
 
     # Common derived property patterns based on column names
+    # Note: Only patterns with valid Pure syntax are included
+    # Date arithmetic (like dateDiff) requires meta::pure::functions::date functions
+    # which may not be available in all Legend configurations
     SEMANTIC_PATTERNS = {
         "fullName": {
             "requires": [("FIRST_NAME", "FIRSTNAME"), ("LAST_NAME", "LASTNAME")],
@@ -67,24 +70,26 @@ class DerivedAnalyzer:
             "return_type": "String",
             "description": "Full name combining first and last name",
         },
-        "age": {
-            "requires": [("BIRTH_DATE", "DOB", "DATE_OF_BIRTH", "BIRTHDATE")],
-            "expression": "$this.birthDate->dateDiff(today(), DurationUnit.YEARS)",
-            "return_type": "Integer",
-            "description": "Age calculated from birth date",
-        },
-        "isExpired": {
-            "requires": [("EXPIRY_DATE", "EXPIRATION_DATE", "VALID_UNTIL")],
-            "expression": "$this.expiryDate < today()",
-            "return_type": "Boolean",
-            "description": "Whether the item has expired",
-        },
-        "durationDays": {
-            "requires": [("START_DATE", "BEGIN_DATE"), ("END_DATE", "FINISH_DATE")],
-            "expression": "$this.endDate->dateDiff($this.startDate, DurationUnit.DAYS)",
-            "return_type": "Integer",
-            "description": "Duration in days between start and end dates",
-        },
+        # Note: Date-based patterns commented out as they require specific Pure
+        # function availability. Uncomment if meta::pure::functions::date is available.
+        # "age": {
+        #     "requires": [("BIRTH_DATE", "DOB", "DATE_OF_BIRTH", "BIRTHDATE")],
+        #     "expression": "meta::pure::functions::date::dateDiff($this.birthDate, today(), meta::pure::functions::date::DurationUnit.YEARS)",
+        #     "return_type": "Integer",
+        #     "description": "Age calculated from birth date",
+        # },
+        # "isExpired": {
+        #     "requires": [("EXPIRY_DATE", "EXPIRATION_DATE", "VALID_UNTIL")],
+        #     "expression": "$this.expiryDate < today()",
+        #     "return_type": "Boolean",
+        #     "description": "Whether the item has expired",
+        # },
+        # "durationDays": {
+        #     "requires": [("START_DATE", "BEGIN_DATE"), ("END_DATE", "FINISH_DATE")],
+        #     "expression": "meta::pure::functions::date::dateDiff($this.startDate, $this.endDate, meta::pure::functions::date::DurationUnit.DAYS)",
+        #     "return_type": "Integer",
+        #     "description": "Duration in days between start and end dates",
+        # },
     }
 
     def __init__(
