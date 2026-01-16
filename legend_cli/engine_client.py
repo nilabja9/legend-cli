@@ -97,6 +97,26 @@ class EngineClient:
         result = self.grammar_to_json(pure_code)
         return self.extract_entities(result)
 
+    def parse_multiple_pure_codes(self, pure_codes: Dict[str, str]) -> List[Dict[str, Any]]:
+        """Parse multiple Pure code blocks and return combined entities.
+
+        This is useful for batching all artifacts into a single SDLC push,
+        ensuring proper ordering and atomic transaction.
+
+        Args:
+            pure_codes: Dict mapping artifact name to Pure code string
+
+        Returns:
+            Combined list of all entities from all artifacts
+        """
+        all_entities = []
+        for artifact_name, code in pure_codes.items():
+            if not code or not code.strip():
+                continue
+            entities = self.parse_pure_code(code)
+            all_entities.extend(entities)
+        return all_entities
+
     def health_check(self) -> bool:
         """Check if Engine is healthy."""
         try:

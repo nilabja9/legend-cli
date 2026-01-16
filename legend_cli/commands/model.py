@@ -61,6 +61,89 @@ def push_pure_code(
             return False
 
 
+def push_all_artifacts(
+    artifacts: dict,
+    project_id: str,
+    workspace_id: str,
+    commit_message: str,
+    db_name: str,
+) -> bool:
+    """Push all artifacts in a single atomic transaction.
+
+    This function combines all artifacts into a single SDLC push request,
+    ensuring proper ordering and avoiding dependency resolution issues
+    that occur when pushing artifacts separately.
+
+    The order of entities in the payload follows dependency order:
+    1. Enumerations (no dependencies)
+    2. Classes (may depend on enums)
+    3. Associations (depend on classes)
+    4. Store (no dependencies)
+    5. Connection (depends on store)
+    6. Mapping (depends on classes, store)
+    7. Runtime (depends on mapping, connection)
+
+    Args:
+        artifacts: Dict of artifact name -> Pure code
+        project_id: Legend SDLC project ID
+        workspace_id: Legend SDLC workspace ID
+        commit_message: Commit message for the push
+        db_name: Database name (for logging)
+
+    Returns:
+        True if push succeeded, False otherwise
+    """
+    # Define the order to ensure dependencies are resolved correctly
+    push_order = [
+        "enumerations",
+        "classes",
+        "associations",
+        "store",
+        "connection",
+        "mapping",
+        "runtime",
+    ]
+
+    # Build ordered artifacts dict
+    ordered_artifacts = {}
+    for key in push_order:
+        if key in artifacts and artifacts[key] and artifacts[key].strip():
+            ordered_artifacts[key] = artifacts[key]
+
+    if not ordered_artifacts:
+        console.print("[yellow]No artifacts to push[/yellow]")
+        return False
+
+    # Parse all artifacts
+    console.print(f"  Parsing {len(ordered_artifacts)} artifacts...")
+    with EngineClient() as engine:
+        try:
+            all_entities = engine.parse_multiple_pure_codes(ordered_artifacts)
+            if not all_entities:
+                console.print("[yellow]No entities found in artifacts[/yellow]")
+                return False
+            console.print(f"  [green]Parsed {len(all_entities)} entities[/green]")
+        except Exception as e:
+            console.print(f"[red]Error parsing artifacts: {e}[/red]")
+            return False
+
+    # Push all entities in a single transaction
+    console.print(f"  Pushing {len(all_entities)} entities in single transaction...")
+    with SDLCClient() as sdlc:
+        try:
+            result = sdlc.update_entities(
+                project_id=project_id,
+                workspace_id=workspace_id,
+                entities=all_entities,
+                message=commit_message,
+            )
+            console.print(f"  [green]Successfully pushed all entities[/green]")
+            return True
+        except Exception as e:
+            console.print(f"[red]Error pushing entities: {e}[/red]")
+            return False
+
+
 @app.command("from-snowflake")
 def generate_from_snowflake(
     database: str = typer.Argument(..., help="Snowflake database name to introspect"),
@@ -415,45 +498,30 @@ def generate_from_snowflake(
             console.print(f"[blue]Creating workspace: {workspace_id}[/blue]")
             sdlc.create_workspace(actual_project_id, workspace_id)
 
-    # Step 4: Push artifacts in order
+    # Step 4: Push all artifacts in a single atomic transaction
     console.print(f"\n[blue]Pushing artifacts to project {actual_project_id}...[/blue]")
 
-    push_order = [
-        ("enumerations", "Enumerations", f"Added enumerations for {database}"),
-        ("store", "Store", f"Added {database} store definition"),
-        ("classes", "Classes", f"Added domain classes for {database}"),
-        ("associations", "Associations", f"Added associations for {database}"),
-        ("connection", "Connection", f"Added Snowflake connection for {database}"),
-        ("mapping", "Mapping", f"Added mapping for {database}"),
-        ("runtime", "Runtime", f"Added runtime for {database}"),
-    ]
-
-    success_count = 0
-    total_artifacts = 0
-    for artifact_key, artifact_name, commit_msg in push_order:
-        # Skip if artifact doesn't exist (e.g., no associations when no relationships)
-        if artifact_key not in artifacts:
-            continue
-        total_artifacts += 1
-        console.print(f"  Pushing {artifact_name}...", end=" ")
-        if push_pure_code(
-            artifacts[artifact_key],
-            actual_project_id,
-            workspace_id,
-            commit_msg,
-            artifact_name,
-        ):
-            console.print("[green]OK[/green]")
-            success_count += 1
-        else:
-            console.print("[red]FAILED[/red]")
+    push_success = push_all_artifacts(
+        artifacts=artifacts,
+        project_id=actual_project_id,
+        workspace_id=workspace_id,
+        commit_message=f"Added complete Legend model for {database}",
+        db_name=database,
+    )
 
     # Summary
-    console.print(f"\n[bold green]Model generation complete![/bold green]")
-    console.print(f"  Project ID: {actual_project_id}")
-    console.print(f"  Workspace: {workspace_id}")
-    console.print(f"  Artifacts pushed: {success_count}/{total_artifacts}")
-    console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
+    if push_success:
+        console.print(f"\n[bold green]Model generation complete![/bold green]")
+        console.print(f"  Project ID: {actual_project_id}")
+        console.print(f"  Workspace: {workspace_id}")
+        console.print(f"  All artifacts pushed successfully")
+        console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
+    else:
+        console.print(f"\n[bold red]Model generation failed![/bold red]")
+        console.print(f"  Project ID: {actual_project_id}")
+        console.print(f"  Workspace: {workspace_id}")
+        console.print(f"  Check the error messages above for details")
+        raise typer.Exit(1)
 
 
 @app.command("list-databases")
@@ -860,45 +928,30 @@ def generate_from_duckdb(
             console.print(f"[blue]Creating workspace: {workspace_id}[/blue]")
             sdlc.create_workspace(actual_project_id, workspace_id)
 
-    # Step 5: Push artifacts in order
+    # Step 5: Push all artifacts in a single atomic transaction
     console.print(f"\n[blue]Pushing artifacts to project {actual_project_id}...[/blue]")
 
-    push_order = [
-        ("enumerations", "Enumerations", f"Added enumerations for {db.name}"),
-        ("store", "Store", f"Added {db.name} store definition"),
-        ("classes", "Classes", f"Added domain classes for {db.name}"),
-        ("associations", "Associations", f"Added associations for {db.name}"),
-        ("connection", "Connection", f"Added DuckDB connection for {db.name}"),
-        ("mapping", "Mapping", f"Added mapping for {db.name}"),
-        ("runtime", "Runtime", f"Added runtime for {db.name}"),
-    ]
-
-    success_count = 0
-    total_artifacts = 0
-    for artifact_key, artifact_name, commit_msg in push_order:
-        # Skip if artifact doesn't exist (e.g., no associations when no relationships)
-        if artifact_key not in artifacts:
-            continue
-        total_artifacts += 1
-        console.print(f"  Pushing {artifact_name}...", end=" ")
-        if push_pure_code(
-            artifacts[artifact_key],
-            actual_project_id,
-            workspace_id,
-            commit_msg,
-            artifact_name,
-        ):
-            console.print("[green]OK[/green]")
-            success_count += 1
-        else:
-            console.print("[red]FAILED[/red]")
+    push_success = push_all_artifacts(
+        artifacts=artifacts,
+        project_id=actual_project_id,
+        workspace_id=workspace_id,
+        commit_message=f"Added complete Legend model for {db.name}",
+        db_name=db.name,
+    )
 
     # Summary
-    console.print(f"\n[bold green]Model generation complete![/bold green]")
-    console.print(f"  Project ID: {actual_project_id}")
-    console.print(f"  Workspace: {workspace_id}")
-    console.print(f"  Artifacts pushed: {success_count}/{total_artifacts}")
-    console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
+    if push_success:
+        console.print(f"\n[bold green]Model generation complete![/bold green]")
+        console.print(f"  Project ID: {actual_project_id}")
+        console.print(f"  Workspace: {workspace_id}")
+        console.print(f"  All artifacts pushed successfully")
+        console.print(f"\n  View in Legend Studio: http://localhost:6900/studio/edit/{actual_project_id}/{workspace_id}")
+    else:
+        console.print(f"\n[bold red]Model generation failed![/bold red]")
+        console.print(f"  Project ID: {actual_project_id}")
+        console.print(f"  Workspace: {workspace_id}")
+        console.print(f"  Check the error messages above for details")
+        raise typer.Exit(1)
 
 
 @app.command("list-duckdb-tables")
