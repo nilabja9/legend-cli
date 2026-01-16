@@ -102,15 +102,17 @@ class SnowflakeConnectionGenerator(ConnectionGenerator):
 
 
 class DuckDBConnectionGenerator(ConnectionGenerator):
-    """Generates DuckDB/LocalH2 connection definitions for Legend.
+    """Generates DuckDB connection definitions for Legend.
 
-    Uses Legend's LocalH2 connection type which can be used for
-    local file-based databases like DuckDB.
+    Supports two modes:
+    1. PostgreSQL mode (default): Uses PostgreSQL wire protocol via Buena Vista
+       or similar proxy server. This allows Legend to connect to DuckDB.
+    2. LocalH2 mode: For testing with embedded H2 database.
     """
 
     @property
     def connection_type(self) -> str:
-        return "H2"
+        return "Postgres"
 
     def generate(
         self,
@@ -118,21 +120,70 @@ class DuckDBConnectionGenerator(ConnectionGenerator):
         store_path: str,
         package_prefix: str = "model",
         database_path: Optional[str] = None,
+        host: str = "localhost",
+        port: int = 5433,
+        use_postgres: bool = True,
         test_data_sqls: Optional[List[str]] = None,
         **kwargs
     ) -> str:
-        """Generate LocalH2 connection for DuckDB.
+        """Generate connection for DuckDB.
 
         Args:
             database_name: Name for the connection
             store_path: Full path to the store definition
             package_prefix: Package prefix for Pure code
             database_path: Path to DuckDB file (optional, for documentation)
+            host: PostgreSQL server host (default: localhost)
+            port: PostgreSQL server port (default: 5433 for Buena Vista)
+            use_postgres: Use PostgreSQL connection (default: True)
             test_data_sqls: Optional SQL statements for test data setup
 
         Returns:
             Pure connection definition as a string
         """
+        if use_postgres:
+            return self._generate_postgres_connection(
+                database_name, store_path, package_prefix, host, port
+            )
+        else:
+            return self._generate_h2_connection(
+                database_name, store_path, package_prefix, test_data_sqls
+            )
+
+    def _generate_postgres_connection(
+        self,
+        database_name: str,
+        store_path: str,
+        package_prefix: str,
+        host: str,
+        port: int,
+    ) -> str:
+        """Generate PostgreSQL connection for DuckDB via wire protocol proxy."""
+        lines = ["###Connection"]
+        lines.append(f"RelationalDatabaseConnection {package_prefix}::connection::{database_name}Connection")
+        lines.append("{")
+        lines.append(f"  store: {store_path};")
+        lines.append("  type: Postgres;")
+        lines.append("  specification: Static")
+        lines.append("  {")
+        lines.append(f"    name: '{database_name}';")
+        lines.append(f"    host: '{host}';")
+        lines.append(f"    port: {port};")
+        lines.append("  };")
+        lines.append("  auth: Test")
+        lines.append("  {")
+        lines.append("  };")
+        lines.append("}")
+        return "\n".join(lines)
+
+    def _generate_h2_connection(
+        self,
+        database_name: str,
+        store_path: str,
+        package_prefix: str,
+        test_data_sqls: Optional[List[str]],
+    ) -> str:
+        """Generate LocalH2 connection (for testing)."""
         lines = ["###Connection"]
         lines.append(f"RelationalDatabaseConnection {package_prefix}::connection::{database_name}Connection")
         lines.append("{")
@@ -142,7 +193,6 @@ class DuckDBConnectionGenerator(ConnectionGenerator):
         lines.append("  {")
 
         if test_data_sqls:
-            # Format SQL statements for test data setup
             sql_lines = []
             for sql in test_data_sqls:
                 escaped_sql = sql.replace("'", "\\'").replace("\n", "\\n")
@@ -154,5 +204,4 @@ class DuckDBConnectionGenerator(ConnectionGenerator):
         lines.append("  };")
         lines.append("  auth: DefaultH2;")
         lines.append("}")
-
         return "\n".join(lines)
