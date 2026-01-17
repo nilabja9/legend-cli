@@ -641,6 +641,114 @@ legend-cli model list-duckdb-tables ./my_database.duckdb --schema main
 | "Module duckdb not found" | Install with `pip install -e ".[duckdb]"` |
 | Tables not showing | Check schema name with `list-duckdb-tables` command |
 
+## MCP Server for Claude Desktop
+
+Legend CLI includes a Model Context Protocol (MCP) server that enables Claude Desktop to interact with Legend for automated model generation and modification.
+
+### Setup
+
+1. **Install legend-cli** (if not already installed):
+   ```bash
+   pip install -e ".[all]"
+   ```
+
+2. **Configure Claude Desktop** by editing `~/Library/Application Support/Claude/claude_desktop_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "legend-cli": {
+         "command": "legend-cli",
+         "args": ["mcp", "serve"],
+         "env": {
+           "LEGEND_SDLC_URL": "http://localhost:6900/sdlc/api",
+           "LEGEND_PAT": "your-personal-access-token",
+           "SNOWFLAKE_ACCOUNT": "your-account",
+           "SNOWFLAKE_USER": "your-user",
+           "SNOWFLAKE_PASSWORD": "your-password",
+           "SNOWFLAKE_WAREHOUSE": "COMPUTE_WH",
+           "SNOWFLAKE_ROLE": "ACCOUNTADMIN"
+         }
+       }
+     }
+   }
+   ```
+
+3. **Restart Claude Desktop** to load the MCP server.
+
+### Available MCP Tools
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Database** | `connect_database` | Connect to Snowflake or DuckDB |
+| | `list_databases` | List available databases |
+| | `list_schemas` | List schemas in a database |
+| | `list_tables` | List tables in a schema |
+| | `describe_table` | Get table structure details |
+| | `introspect_database` | Full schema introspection with relationship detection |
+| **Generation** | `generate_model` | Generate complete Legend model (store, classes, connection, mapping, runtime, associations) |
+| | `generate_store` | Generate database store definition |
+| | `generate_classes` | Generate Pure classes from tables |
+| | `generate_connection` | Generate connection definition |
+| | `generate_mapping` | Generate relational mapping |
+| | `generate_runtime` | Generate runtime configuration |
+| | `generate_associations` | Generate associations from relationships |
+| | `analyze_schema` | Enhanced LLM-powered schema analysis |
+| **SDLC** | `list_projects` | List all SDLC projects |
+| | `create_project` | Create a new SDLC project |
+| | `list_workspaces` | List workspaces in a project |
+| | `create_workspace` | Create a new workspace |
+| | `get_workspace_entities` | List entities in a workspace |
+| | `push_artifacts` | Push generated artifacts to SDLC |
+| **Preview** | `preview_changes` | Preview pending artifacts |
+| | `validate_pure_code` | Validate Pure syntax |
+| **Modification** | `read_entity` | Read existing entity from SDLC |
+| | `read_entities` | List all entities in workspace |
+| | `add_property` | Add property to existing class |
+| | `remove_property` | Remove property from class |
+| | `create_class` | Create a new Pure class |
+| | `create_association` | Create association between classes |
+| | `create_function` | Create Pure function/query |
+| | `delete_entity` | Delete entity from SDLC |
+| | `update_entity` | Update existing entity |
+
+### Sample Prompts for Claude Desktop
+
+**End-to-End Model Creation (Snowflake):**
+```
+Create a Legend model from my Snowflake database ECOMMERCE_DB:
+1. Create a new project called "ECOMMERCE-Models"
+2. Create a workspace called "initial-models" in that project
+3. Connect to Snowflake database ECOMMERCE_DB with warehouse COMPUTE_WH
+4. Introspect the PUBLIC schema with relationship detection
+5. Generate all model artifacts with package prefix "ecommerce"
+6. Preview the generated Pure code
+7. Push to the new project and workspace
+```
+
+**End-to-End Model Creation (DuckDB):**
+```
+Create a Legend model from my DuckDB file at /path/to/data.duckdb:
+1. Create a new project called "Analytics-Models"
+2. Create workspace "v1" in that project
+3. Connect to the DuckDB database
+4. Introspect all schemas and detect relationships
+5. Generate complete model with documentation
+6. Push to SDLC
+```
+
+**Model Updates:**
+```
+In project "MyProject" workspace "main":
+1. Add a new property "lastLoginDate" of type DateTime to class model::domain::User
+2. Create a new association between Order and Customer classes
+```
+
+**Exploring Existing Models:**
+```
+Show me all entities in project "MyProject" workspace "main" and
+read the User class to understand its current structure
+```
+
 ## Architecture
 
 ```
@@ -672,11 +780,21 @@ legend-cli/
 │   │   ├── templates.py     # AI prompt templates
 │   │   ├── examples.py      # Few-shot examples
 │   │   └── doc_templates.py # Documentation generation prompts
-│   └── commands/
-│       ├── project.py       # Project commands
-│       ├── workspace.py     # Workspace commands
-│       ├── create.py        # Entity creation commands
-│       └── model.py         # Model generation commands
+│   ├── commands/
+│   │   ├── project.py       # Project commands
+│   │   ├── workspace.py     # Workspace commands
+│   │   ├── create.py        # Entity creation commands
+│   │   └── model.py         # Model generation commands
+│   └── mcp/                 # MCP server for Claude Desktop
+│       ├── server.py        # MCP server implementation
+│       ├── context.py       # Session context management
+│       ├── errors.py        # Custom exceptions
+│       └── tools/           # MCP tool implementations
+│           ├── database.py      # Database introspection tools
+│           ├── model_generation.py  # Pure code generation tools
+│           ├── model_modification.py # Entity modification tools
+│           ├── sdlc.py          # SDLC project/workspace tools
+│           └── preview.py       # Preview and validation tools
 ```
 
 ## Requirements

@@ -26,6 +26,33 @@ def get_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="create_project",
+            description="Create a new Legend SDLC project. Use this when you need to create a new project for storing models. The project will be created with the specified name and optional description.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the project to create (e.g., 'SEC-FILINGS', 'Customer-Analytics')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description of the project"
+                    },
+                    "group_id": {
+                        "type": "string",
+                        "description": "Maven group ID for the project (default: 'org.demo.legend')",
+                        "default": "org.demo.legend"
+                    },
+                    "artifact_id": {
+                        "type": "string",
+                        "description": "Maven artifact ID (default: derived from project name)"
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
             name="list_workspaces",
             description="List all workspaces in a Legend SDLC project.",
             inputSchema={
@@ -132,6 +159,53 @@ async def list_projects(ctx: MCPContext) -> str:
 
     except Exception as e:
         raise SDLCError(f"Failed to list projects: {str(e)}")
+
+
+async def create_project(
+    ctx: MCPContext,
+    name: str,
+    description: Optional[str] = None,
+    group_id: str = "org.demo.legend",
+    artifact_id: Optional[str] = None,
+) -> str:
+    """Create a new SDLC project."""
+    try:
+        from legend_cli.sdlc_client import SDLCClient
+
+        with SDLCClient() as client:
+            project = client.create_project(
+                name=name,
+                description=description,
+                group_id=group_id,
+                artifact_id=artifact_id,
+            )
+
+        project_id = project.get("projectId")
+
+        # Update context with new project
+        ctx.current_project_id = project_id
+
+        return json.dumps({
+            "status": "success",
+            "project": {
+                "id": project_id,
+                "name": project.get("name"),
+                "description": project.get("description"),
+                "group_id": project.get("groupId"),
+                "artifact_id": project.get("artifactId"),
+            },
+            "message": f"Successfully created project '{name}' with ID '{project_id}'. You can now create a workspace in this project using create_workspace."
+        })
+
+    except Exception as e:
+        error_str = str(e)
+        if "409" in error_str or "already exists" in error_str.lower():
+            return json.dumps({
+                "status": "exists",
+                "name": name,
+                "message": f"Project '{name}' already exists. Use list_projects to find the existing project ID."
+            })
+        raise SDLCError(f"Failed to create project: {error_str}")
 
 
 async def list_workspaces(ctx: MCPContext, project_id: str) -> str:

@@ -95,6 +95,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         # SDLC tools
         elif name == "list_projects":
             result = await sdlc.list_projects(ctx, **arguments)
+        elif name == "create_project":
+            result = await sdlc.create_project(ctx, **arguments)
         elif name == "list_workspaces":
             result = await sdlc.list_workspaces(ctx, **arguments)
         elif name == "create_workspace":
