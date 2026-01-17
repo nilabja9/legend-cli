@@ -2,7 +2,7 @@
 
 import typer
 from rich.console import Console
-from .commands import project, workspace, create, model
+from .commands import project, workspace, create, model, mcp
 from .config import settings
 
 app = typer.Typer(
@@ -16,6 +16,7 @@ app.add_typer(project.app, name="project")
 app.add_typer(workspace.app, name="workspace")
 app.add_typer(create.app, name="create")
 app.add_typer(model.app, name="model")
+app.add_typer(mcp.app, name="mcp")
 
 console = Console()
 
