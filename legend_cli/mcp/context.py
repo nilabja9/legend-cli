@@ -1,10 +1,59 @@
 """Session state management for Legend MCP server."""
 
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
 from legend_cli.database.models import Database
+
+
+def sanitize_pure_identifier(name: str) -> str:
+    """Sanitize a string to be a valid Pure identifier.
+
+    Pure identifiers must:
+    - Start with a letter
+    - Contain only alphanumeric characters and underscores
+    - Use :: as package separator (not /, ., or other chars)
+
+    This function:
+    - Extracts filename from paths
+    - Converts to PascalCase
+    - Removes invalid characters
+
+    Args:
+        name: Raw name (could be file path, database name, etc.)
+
+    Returns:
+        Valid Pure identifier
+    """
+    if not name:
+        return "Unknown"
+
+    # If it looks like a file path, extract just the filename
+    if '/' in name or '\\' in name:
+        name = Path(name).stem
+
+    # Remove file extension if present
+    if '.' in name:
+        name = name.rsplit('.', 1)[0]
+
+    # Replace common separators with underscores
+    name = re.sub(r'[-\s.]+', '_', name)
+
+    # Remove any characters that aren't alphanumeric or underscore
+    name = re.sub(r'[^a-zA-Z0-9_]', '', name)
+
+    # Convert to PascalCase
+    parts = name.split('_')
+    name = ''.join(part.capitalize() for part in parts if part)
+
+    # Ensure it starts with a letter
+    if name and not name[0].isalpha():
+        name = 'Db' + name
+
+    return name or "Database"
 
 
 class DatabaseType(str, Enum):

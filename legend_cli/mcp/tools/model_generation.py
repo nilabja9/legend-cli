@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from mcp.types import Tool
 
-from ..context import MCPContext, DatabaseType
+from ..context import MCPContext, DatabaseType, sanitize_pure_identifier
 from ..errors import GenerationError, IntrospectionError
 
 
@@ -364,16 +364,22 @@ async def generate_model(
         # Update context settings
         ctx.package_prefix = package_prefix
 
+        # Sanitize database name for Pure code
+        db_name = sanitize_pure_identifier(schema.name)
+
+        # Update the schema name to use sanitized version
+        schema.name = db_name
+
         # Create generator
         generator = PureCodeGenerator(schema, package_prefix)
 
         # Generate connection code
-        store_path = f"{package_prefix}::store::{schema.name}"
+        store_path = f"{package_prefix}::store::{db_name}"
 
         if db_type_enum == DatabaseType.SNOWFLAKE:
             conn_gen = SnowflakeConnectionGenerator()
             connection_code = conn_gen.generate(
-                database_name=schema.name,
+                database_name=db_name,
                 store_path=store_path,
                 package_prefix=package_prefix,
                 account=snowflake_account or "",
@@ -383,7 +389,7 @@ async def generate_model(
         else:
             conn_gen = DuckDBConnectionGenerator()
             connection_code = conn_gen.generate(
-                database_name=schema.name,
+                database_name=db_name,
                 store_path=store_path,
                 package_prefix=package_prefix,
                 host=duckdb_host,
@@ -440,6 +446,10 @@ async def generate_store(
         from legend_cli.pure.generator import PureCodeGenerator
 
         schema = _get_schema_or_error(ctx, db_type, database)
+
+        # Sanitize database name for Pure code
+        schema.name = sanitize_pure_identifier(schema.name)
+
         generator = PureCodeGenerator(schema, package_prefix)
 
         if include_joins:
@@ -474,6 +484,10 @@ async def generate_classes(
         from legend_cli.pure.generator import PureCodeGenerator
 
         schema = _get_schema_or_error(ctx, db_type, database)
+
+        # Sanitize database name for Pure code
+        schema.name = sanitize_pure_identifier(schema.name)
+
         generator = PureCodeGenerator(schema, package_prefix)
 
         docs = None
@@ -515,12 +529,15 @@ async def generate_connection(
         from legend_cli.pure.connections import SnowflakeConnectionGenerator, DuckDBConnectionGenerator
 
         db_type_enum = DatabaseType(db_type.lower())
-        store_path = f"{package_prefix}::store::{database}"
+
+        # Sanitize database name for Pure code
+        db_name = sanitize_pure_identifier(database)
+        store_path = f"{package_prefix}::store::{db_name}"
 
         if db_type_enum == DatabaseType.SNOWFLAKE:
             conn_gen = SnowflakeConnectionGenerator()
             code = conn_gen.generate(
-                database_name=database,
+                database_name=db_name,
                 store_path=store_path,
                 package_prefix=package_prefix,
                 account=account or "",
@@ -532,7 +549,7 @@ async def generate_connection(
         else:
             conn_gen = DuckDBConnectionGenerator()
             code = conn_gen.generate(
-                database_name=database,
+                database_name=db_name,
                 store_path=store_path,
                 package_prefix=package_prefix,
                 host=host,
@@ -564,6 +581,10 @@ async def generate_mapping(
         from legend_cli.pure.generator import PureCodeGenerator
 
         schema = _get_schema_or_error(ctx, db_type, database)
+
+        # Sanitize database name for Pure code
+        schema.name = sanitize_pure_identifier(schema.name)
+
         generator = PureCodeGenerator(schema, package_prefix)
         code = generator.generate_mapping()
 
@@ -593,6 +614,10 @@ async def generate_runtime(
         from legend_cli.pure.generator import PureCodeGenerator
 
         schema = _get_schema_or_error(ctx, db_type, database)
+
+        # Sanitize database name for Pure code
+        schema.name = sanitize_pure_identifier(schema.name)
+
         generator = PureCodeGenerator(schema, package_prefix)
         code = generator.generate_runtime()
 
@@ -622,6 +647,10 @@ async def generate_associations(
         from legend_cli.pure.generator import PureCodeGenerator
 
         schema = _get_schema_or_error(ctx, db_type, database)
+
+        # Sanitize database name for Pure code
+        schema.name = sanitize_pure_identifier(schema.name)
+
         generator = PureCodeGenerator(schema, package_prefix)
         code = generator.generate_associations()
 
