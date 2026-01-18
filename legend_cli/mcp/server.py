@@ -111,6 +111,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await preview.preview_changes(ctx, **arguments)
         elif name == "validate_pure_code":
             result = await preview.validate_pure_code(ctx, **arguments)
+        elif name == "validate_model_completeness":
+            result = await preview.validate_model_completeness(ctx, **arguments)
 
         # Model modification tools
         elif name == "read_entity":

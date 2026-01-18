@@ -80,6 +80,10 @@ class EngineClient:
                 "relationalDatabaseConnection": "meta::pure::runtime::PackageableConnection",
                 "mapping": "meta::pure::mapping::Mapping",
                 "function": "meta::pure::metamodel::function::ConcreteFunctionDefinition",
+                "packageableRuntime": "meta::pure::runtime::PackageableRuntime",
+                "association": "meta::pure::metamodel::relationship::Association",
+                "profile": "meta::pure::metamodel::extension::Profile",
+                "enumeration": "meta::pure::metamodel::type::Enumeration",
             }
 
             classifier = classifier_map.get(element_type, f"meta::pure::metamodel::{element_type}")

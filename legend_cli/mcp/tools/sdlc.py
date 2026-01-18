@@ -300,6 +300,107 @@ async def get_workspace_entities(ctx: MCPContext, project_id: str, workspace_id:
         raise SDLCError(f"Failed to get workspace entities: {str(e)}")
 
 
+def _validate_artifacts(ctx: MCPContext) -> dict:
+    """Validate pending artifacts before push.
+
+    Returns dict with:
+        - valid: bool indicating if all validations passed
+        - errors: list of error messages
+        - warnings: list of warning messages
+        - artifact_types: set of present artifact types
+    """
+    errors = []
+    warnings = []
+    artifact_types = set()
+
+    for artifact in ctx.pending_artifacts:
+        if artifact.pure_code and artifact.pure_code.strip():
+            artifact_types.add(artifact.artifact_type)
+        else:
+            errors.append(f"Artifact '{artifact.artifact_type}' has empty Pure code")
+
+    # Check for required artifacts when we have interconnected model
+    has_mapping = "mapping" in artifact_types
+    has_runtime = "runtime" in artifact_types
+    has_store = "store" in artifact_types
+    has_connection = "connection" in artifact_types
+    has_classes = "classes" in artifact_types
+
+    # If we have mapping/runtime, we need store and classes
+    if has_mapping and not has_store:
+        errors.append("Mapping artifact is present but Store is missing. Mapping references the store and will fail.")
+
+    if has_mapping and not has_classes:
+        errors.append("Mapping artifact is present but Classes are missing. Mapping references classes and will fail.")
+
+    if has_runtime and not has_store:
+        errors.append("Runtime artifact is present but Store is missing. Runtime references the store and will fail.")
+
+    if has_runtime and not has_connection:
+        errors.append("Runtime artifact is present but Connection is missing. Runtime references the connection and will fail.")
+
+    if has_runtime and not has_mapping:
+        errors.append("Runtime artifact is present but Mapping is missing. Runtime references the mapping and will fail.")
+
+    if has_connection and not has_store:
+        errors.append("Connection artifact is present but Store is missing. Connection references the store and will fail.")
+
+    # Warnings for incomplete models
+    if has_store and not has_classes:
+        warnings.append("Store is present but no Classes. Consider generating classes for a complete model.")
+
+    if has_classes and not has_mapping:
+        warnings.append("Classes are present but no Mapping. The classes won't be mapped to the database.")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "artifact_types": artifact_types
+    }
+
+
+def _validate_parsed_entities(entities: list, artifact_types: set) -> dict:
+    """Validate that parsed entities match expected artifact types.
+
+    Returns dict with:
+        - valid: bool
+        - errors: list of error messages
+        - entity_types: dict mapping classifier to count
+        - missing: list of expected but missing types
+    """
+    errors = []
+    entity_types = {}
+
+    for entity in entities:
+        classifier = entity.get("classifierPath", "")
+        entity_types[classifier] = entity_types.get(classifier, 0) + 1
+
+    # Map artifact types to expected classifiers
+    artifact_to_classifier = {
+        "store": "meta::relational::metamodel::Database",
+        "classes": "meta::pure::metamodel::type::Class",
+        "connection": "meta::pure::runtime::PackageableConnection",
+        "mapping": "meta::pure::mapping::Mapping",
+        "runtime": "meta::pure::runtime::PackageableRuntime",
+        "associations": "meta::pure::metamodel::relationship::Association",
+    }
+
+    missing = []
+    for artifact_type in artifact_types:
+        expected_classifier = artifact_to_classifier.get(artifact_type)
+        if expected_classifier and expected_classifier not in entity_types:
+            missing.append(artifact_type)
+            errors.append(f"Artifact type '{artifact_type}' was in pending artifacts but no entity with classifier '{expected_classifier}' was parsed. This may indicate a parsing error in the Pure code.")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "entity_types": entity_types,
+        "missing": missing
+    }
+
+
 async def push_artifacts(
     ctx: MCPContext,
     project_id: str,
@@ -307,7 +408,7 @@ async def push_artifacts(
     commit_message: str = "Generated via Legend CLI MCP",
     clear_pending: bool = True,
 ) -> str:
-    """Push pending artifacts to SDLC."""
+    """Push pending artifacts to SDLC with comprehensive validation."""
     try:
         from legend_cli.sdlc_client import SDLCClient
         from legend_cli.engine_client import EngineClient
@@ -318,40 +419,88 @@ async def push_artifacts(
                 "message": "No pending artifacts to push. Generate artifacts first using generate_model or other generation tools."
             })
 
-        # Parse all Pure code through Engine
+        # Step 1: Validate artifacts before parsing
+        validation = _validate_artifacts(ctx)
+        if not validation["valid"]:
+            return json.dumps({
+                "status": "validation_error",
+                "errors": validation["errors"],
+                "warnings": validation["warnings"],
+                "artifact_types_present": list(validation["artifact_types"]),
+                "message": "Artifact validation failed. Please regenerate the missing artifacts before pushing.",
+                "suggestion": "Use 'generate_model' to regenerate all artifacts, or use individual generation tools (generate_store, generate_classes, etc.) to regenerate specific missing artifacts."
+            })
+
+        # Step 2: Parse all Pure code through Engine with error tracking
+        parse_errors = []
+        parsed_by_type = {}
+
         with EngineClient() as engine:
             pure_codes = {}
             for artifact in ctx.pending_artifacts:
-                if artifact.pure_code:
+                if artifact.pure_code and artifact.pure_code.strip():
                     pure_codes[artifact.artifact_type] = artifact.pure_code
 
-            entities = engine.parse_multiple_pure_codes(pure_codes)
+            # Parse each artifact separately to track failures
+            all_entities = []
+            for artifact_type, code in pure_codes.items():
+                try:
+                    entities = engine.parse_pure_code(code)
+                    if entities:
+                        all_entities.extend(entities)
+                        parsed_by_type[artifact_type] = len(entities)
+                    else:
+                        parse_errors.append(f"Artifact '{artifact_type}' parsed but returned no entities")
+                except Exception as parse_err:
+                    parse_errors.append(f"Failed to parse '{artifact_type}': {str(parse_err)}")
 
-        if not entities:
+        if parse_errors:
             return json.dumps({
-                "status": "error",
-                "message": "No valid entities extracted from Pure code"
+                "status": "parse_error",
+                "errors": parse_errors,
+                "successfully_parsed": parsed_by_type,
+                "message": "Some artifacts failed to parse. Please check the Pure code syntax.",
+                "suggestion": "Use 'preview_changes' to review the generated Pure code, or 'validate_pure_code' to check syntax."
             })
 
-        # Push to SDLC
+        if not all_entities:
+            return json.dumps({
+                "status": "error",
+                "message": "No valid entities extracted from Pure code",
+                "artifact_types_attempted": list(pure_codes.keys())
+            })
+
+        # Step 3: Validate parsed entities match expected types
+        entity_validation = _validate_parsed_entities(all_entities, validation["artifact_types"])
+        if not entity_validation["valid"]:
+            return json.dumps({
+                "status": "entity_validation_error",
+                "errors": entity_validation["errors"],
+                "missing_types": entity_validation["missing"],
+                "parsed_entity_types": entity_validation["entity_types"],
+                "message": "Parsed entities don't match expected artifact types. Some Pure code may have syntax errors.",
+                "suggestion": "Use 'preview_changes' with include_full_code=true to review the Pure code for the missing types."
+            })
+
+        # Step 4: Push to SDLC
         with SDLCClient() as client:
             result = client.update_entities(
                 project_id=project_id,
                 workspace_id=workspace_id,
-                entities=entities,
+                entities=all_entities,
                 message=commit_message
             )
 
         # Update context
         ctx.set_sdlc_context(project_id, workspace_id)
 
-        pushed_count = len(entities)
+        pushed_count = len(all_entities)
         artifact_types = list(pure_codes.keys())
 
         if clear_pending:
             ctx.clear_pending_artifacts()
 
-        return json.dumps({
+        response = {
             "status": "success",
             "project_id": project_id,
             "workspace_id": workspace_id,
@@ -361,13 +510,20 @@ async def push_artifacts(
                     "path": e.get("path"),
                     "classifier": e.get("classifierPath")
                 }
-                for e in entities
+                for e in all_entities
             ],
             "artifact_types": artifact_types,
             "entity_count": pushed_count,
+            "parsed_by_type": parsed_by_type,
             "cleared_pending": clear_pending,
             "message": f"Successfully pushed {pushed_count} entities to workspace '{workspace_id}'"
-        })
+        }
+
+        # Include warnings if any
+        if validation["warnings"]:
+            response["warnings"] = validation["warnings"]
+
+        return json.dumps(response)
 
     except Exception as e:
         if "404" in str(e):

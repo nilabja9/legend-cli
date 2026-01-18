@@ -53,6 +53,15 @@ def get_tools() -> List[Tool]:
                 "required": []
             }
         ),
+        Tool(
+            name="validate_model_completeness",
+            description="Validate that all required artifacts are present for a complete model before pushing. Checks for missing dependencies (e.g., mapping needs store and classes, runtime needs connection and mapping). Use this BEFORE push_artifacts to ensure the model is complete.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
     ]
 
 
@@ -203,3 +212,133 @@ async def validate_pure_code(
 
     except Exception as e:
         raise EngineError(f"Validation failed: {str(e)}")
+
+
+async def validate_model_completeness(ctx: MCPContext) -> str:
+    """Validate that all required artifacts are present for a complete model.
+
+    This checks:
+    1. All artifact types have non-empty Pure code
+    2. Dependencies are satisfied (e.g., mapping needs store and classes)
+    3. Each artifact can be parsed by the Legend Engine
+    """
+    try:
+        from legend_cli.engine_client import EngineClient
+
+        if not ctx.pending_artifacts:
+            return json.dumps({
+                "status": "no_artifacts",
+                "complete": False,
+                "message": "No pending artifacts. Generate artifacts first using generate_model or other generation tools."
+            })
+
+        # Collect artifact types and check for empty code
+        artifact_types = set()
+        empty_artifacts = []
+
+        for artifact in ctx.pending_artifacts:
+            if artifact.pure_code and artifact.pure_code.strip():
+                artifact_types.add(artifact.artifact_type)
+            else:
+                empty_artifacts.append(artifact.artifact_type)
+
+        errors = []
+        warnings = []
+
+        # Report empty artifacts
+        for empty in empty_artifacts:
+            errors.append(f"Artifact '{empty}' has empty Pure code")
+
+        # Check dependencies
+        has_mapping = "mapping" in artifact_types
+        has_runtime = "runtime" in artifact_types
+        has_store = "store" in artifact_types
+        has_connection = "connection" in artifact_types
+        has_classes = "classes" in artifact_types
+        has_associations = "associations" in artifact_types
+
+        # Critical dependencies (will cause push to fail)
+        if has_mapping and not has_store:
+            errors.append("CRITICAL: Mapping references Store but Store is missing")
+        if has_mapping and not has_classes:
+            errors.append("CRITICAL: Mapping references Classes but Classes are missing")
+        if has_runtime and not has_store:
+            errors.append("CRITICAL: Runtime references Store but Store is missing")
+        if has_runtime and not has_connection:
+            errors.append("CRITICAL: Runtime references Connection but Connection is missing")
+        if has_runtime and not has_mapping:
+            errors.append("CRITICAL: Runtime references Mapping but Mapping is missing")
+        if has_connection and not has_store:
+            errors.append("CRITICAL: Connection references Store but Store is missing")
+
+        # Warnings (model may be incomplete)
+        if has_store and not has_classes:
+            warnings.append("Store is present but Classes are missing - model incomplete")
+        if has_classes and not has_mapping:
+            warnings.append("Classes are present but Mapping is missing - classes won't be mapped to database")
+        if has_mapping and not has_runtime:
+            warnings.append("Mapping is present but Runtime is missing - won't be executable")
+
+        # Validate syntax with Engine
+        parse_results = []
+        parse_errors = []
+
+        with EngineClient() as engine:
+            for artifact in ctx.pending_artifacts:
+                if not artifact.pure_code or not artifact.pure_code.strip():
+                    continue
+
+                try:
+                    result = engine.grammar_to_json(artifact.pure_code)
+                    entities = engine.extract_entities(result)
+                    parse_results.append({
+                        "artifact_type": artifact.artifact_type,
+                        "valid": True,
+                        "entity_count": len(entities),
+                        "entity_paths": [e.get("path") for e in entities]
+                    })
+                except Exception as parse_err:
+                    error_msg = str(parse_err)
+                    parse_errors.append(f"Failed to parse '{artifact.artifact_type}': {error_msg[:200]}")
+                    parse_results.append({
+                        "artifact_type": artifact.artifact_type,
+                        "valid": False,
+                        "error": error_msg[:200]
+                    })
+
+        if parse_errors:
+            errors.extend(parse_errors)
+
+        # Determine overall status
+        is_complete = len(errors) == 0
+        status = "complete" if is_complete else "incomplete"
+
+        response = {
+            "status": status,
+            "complete": is_complete,
+            "artifact_types_present": sorted(list(artifact_types)),
+            "artifact_count": len(artifact_types),
+            "parse_results": parse_results,
+        }
+
+        if errors:
+            response["errors"] = errors
+            response["error_count"] = len(errors)
+
+        if warnings:
+            response["warnings"] = warnings
+
+        if is_complete:
+            response["message"] = f"Model is complete with {len(artifact_types)} artifact types. Ready to push."
+        else:
+            response["message"] = f"Model has {len(errors)} error(s). Please fix before pushing."
+            response["suggestion"] = "Use 'generate_model' to regenerate all artifacts, or use individual tools to regenerate specific artifacts."
+
+        return json.dumps(response, indent=2)
+
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "complete": False,
+            "message": f"Validation failed: {str(e)}"
+        })
