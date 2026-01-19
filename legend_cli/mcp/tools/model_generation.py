@@ -13,6 +13,34 @@ from ..context import MCPContext, DatabaseType, sanitize_pure_identifier
 from ..errors import GenerationError, IntrospectionError
 
 
+def _needs_database_input_response(db_type: str, tool_name: str) -> str:
+    """Return a structured response asking for database info."""
+    hints = {
+        "snowflake": "For Snowflake: database name (e.g., 'MY_DB')",
+        "duckdb": "For DuckDB: path to .duckdb file (e.g., '/path/to/data.duckdb')",
+    }
+    hint = hints.get(db_type.lower(), "Provide the database identifier")
+
+    return json.dumps({
+        "status": "needs_input",
+        "required_field": "database",
+        "message": f"Please provide the database identifier to {tool_name.replace('_', ' ')}.",
+        "db_type": db_type,
+        "hint": hint,
+        "options": [
+            {
+                "action": "provide_database",
+                "description": "Provide database identifier"
+            },
+            {
+                "action": "skip",
+                "description": "Generate classes only (no store/connection)",
+                "how": "Call with skip_database_prompt=true"
+            }
+        ]
+    })
+
+
 def get_tools() -> List[Tool]:
     """Return all model generation tools."""
     return [
@@ -69,9 +97,14 @@ def get_tools() -> List[Tool]:
                     "duckdb_port": {
                         "type": "integer",
                         "description": "DuckDB PostgreSQL proxy port (DuckDB only, default: 5433)"
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, generate classes only without store/connection when database is not provided",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -98,9 +131,14 @@ def get_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "Include join definitions from relationships (default: true)",
                         "default": True
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -127,9 +165,14 @@ def get_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "Generate doc.doc annotations",
                         "default": False
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -184,9 +227,14 @@ def get_tools() -> List[Tool]:
                         "type": "integer",
                         "description": "PostgreSQL proxy port (DuckDB only)",
                         "default": 5433
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -208,9 +256,14 @@ def get_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Package prefix (default: 'model')",
                         "default": "model"
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -232,9 +285,14 @@ def get_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Package prefix (default: 'model')",
                         "default": "model"
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -256,9 +314,14 @@ def get_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Package prefix (default: 'model')",
                         "default": "model"
+                    },
+                    "skip_database_prompt": {
+                        "type": "boolean",
+                        "description": "If true, skip prompting for database",
+                        "default": False
                     }
                 },
-                "required": ["db_type", "database"]
+                "required": ["db_type"]
             }
         ),
         Tool(
@@ -332,7 +395,7 @@ def _get_schema_or_error(ctx: MCPContext, db_type: str, database: str):
 async def generate_model(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     schema_filter: Optional[str] = None,
     package_prefix: str = "model",
     enhanced: bool = True,
@@ -342,8 +405,20 @@ async def generate_model(
     snowflake_role: Optional[str] = None,
     duckdb_host: str = "host.docker.internal",
     duckdb_port: int = 5433,
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate complete model from database."""
+    # Check if database is needed
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_model")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate model without database. The 'skip' option is not available for generate_model as it requires database introspection.",
+            "suggestion": "Please provide the database parameter, or use generate_classes with an already-introspected schema."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
         from legend_cli.pure.connections import SnowflakeConnectionGenerator, DuckDBConnectionGenerator
@@ -437,11 +512,22 @@ async def generate_model(
 async def generate_store(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
     include_joins: bool = True,
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate store definition."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_store")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate store without database. Store requires a database schema to be introspected.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
 
@@ -475,11 +561,22 @@ async def generate_store(
 async def generate_classes(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
     generate_docs: bool = False,
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate class definitions."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_classes")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate classes without database. Classes require a database schema to be introspected.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
 
@@ -512,7 +609,7 @@ async def generate_classes(
 async def generate_connection(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
     # Snowflake params
     account: Optional[str] = None,
@@ -523,8 +620,19 @@ async def generate_connection(
     # DuckDB params
     host: str = "host.docker.internal",
     port: int = 5433,
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate connection definition."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_connection")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate connection without database. Connection requires a database name.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.connections import SnowflakeConnectionGenerator, DuckDBConnectionGenerator
 
@@ -573,10 +681,21 @@ async def generate_connection(
 async def generate_mapping(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate mapping definition."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_mapping")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate mapping without database. Mapping requires a database schema to be introspected.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
 
@@ -606,10 +725,21 @@ async def generate_mapping(
 async def generate_runtime(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate runtime definition."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_runtime")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate runtime without database. Runtime requires a database schema to be introspected.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
 
@@ -639,10 +769,21 @@ async def generate_runtime(
 async def generate_associations(
     ctx: MCPContext,
     db_type: str,
-    database: str,
+    database: Optional[str] = None,
     package_prefix: str = "model",
+    skip_database_prompt: bool = False,
 ) -> str:
     """Generate association definitions."""
+    if not database and not skip_database_prompt:
+        return _needs_database_input_response(db_type, "generate_associations")
+
+    if not database and skip_database_prompt:
+        return json.dumps({
+            "status": "error",
+            "message": "Cannot generate associations without database. Associations require a database schema to be introspected.",
+            "suggestion": "Please provide the database parameter."
+        })
+
     try:
         from legend_cli.pure.generator import PureCodeGenerator
 

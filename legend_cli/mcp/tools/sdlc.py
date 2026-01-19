@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 from mcp.types import Tool
 
 from ..context import MCPContext
-from ..errors import SDLCError, WorkspaceNotFoundError, ProjectNotFoundError
+from ..errors import SDLCError, WorkspaceNotFoundError, ProjectNotFoundError, PartialPushError
 
 
 def get_tools() -> List[Tool]:
@@ -104,7 +104,7 @@ def get_tools() -> List[Tool]:
         ),
         Tool(
             name="push_artifacts",
-            description="Push pending artifacts to Legend SDLC workspace. This performs an atomic batch push of all generated Pure code.",
+            description="Push pending artifacts to Legend SDLC workspace. This performs an atomic batch push of all generated Pure code with optional verification and retry logic.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -125,6 +125,16 @@ def get_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "Clear pending artifacts after push",
                         "default": True
+                    },
+                    "verify_push": {
+                        "type": "boolean",
+                        "description": "Verify entities exist after push (default: true)",
+                        "default": True
+                    },
+                    "max_retries": {
+                        "type": "integer",
+                        "description": "Maximum retry attempts for transient failures (default: 3)",
+                        "default": 3
                     }
                 },
                 "required": ["project_id", "workspace_id"]
@@ -407,8 +417,10 @@ async def push_artifacts(
     workspace_id: str,
     commit_message: str = "Generated via Legend CLI MCP",
     clear_pending: bool = True,
+    verify_push: bool = True,
+    max_retries: int = 3,
 ) -> str:
-    """Push pending artifacts to SDLC with comprehensive validation."""
+    """Push pending artifacts to SDLC with comprehensive validation, retry logic, and verification."""
     try:
         from legend_cli.sdlc_client import SDLCClient
         from legend_cli.engine_client import EngineClient
@@ -482,14 +494,42 @@ async def push_artifacts(
                 "suggestion": "Use 'preview_changes' with include_full_code=true to review the Pure code for the missing types."
             })
 
-        # Step 4: Push to SDLC
+        # Step 4: Push to SDLC with retry logic
         with SDLCClient() as client:
-            result = client.update_entities(
-                project_id=project_id,
-                workspace_id=workspace_id,
-                entities=all_entities,
-                message=commit_message
-            )
+            if max_retries > 0:
+                result = client.update_entities_with_retry(
+                    project_id=project_id,
+                    workspace_id=workspace_id,
+                    entities=all_entities,
+                    message=commit_message,
+                    max_retries=max_retries,
+                )
+            else:
+                result = client.update_entities(
+                    project_id=project_id,
+                    workspace_id=workspace_id,
+                    entities=all_entities,
+                    message=commit_message,
+                )
+
+            # Step 5: Verify entities were created
+            verification_result = None
+            if verify_push:
+                entity_paths = [e.get("path") for e in all_entities]
+                verification_result = client.verify_entities_exist(
+                    project_id, workspace_id, entity_paths
+                )
+
+                if not verification_result["all_found"]:
+                    return json.dumps({
+                        "status": "verification_failed",
+                        "message": f"Push appeared successful but {verification_result['total_missing']} entities not found in workspace",
+                        "missing_entities": verification_result["missing"],
+                        "found_entities": verification_result["found"],
+                        "total_expected": verification_result["total_expected"],
+                        "total_found": verification_result["total_found"],
+                        "suggestion": "Try pushing again with max_retries=3, or check Legend Studio for any errors."
+                    })
 
         # Update context
         ctx.set_sdlc_context(project_id, workspace_id)
@@ -518,6 +558,18 @@ async def push_artifacts(
             "cleared_pending": clear_pending,
             "message": f"Successfully pushed {pushed_count} entities to workspace '{workspace_id}'"
         }
+
+        # Include revision from SDLC response if available
+        if result and isinstance(result, dict) and result.get("revision"):
+            response["revision"] = result["revision"]
+
+        # Include verification details
+        if verify_push and verification_result:
+            response["verification"] = {
+                "verified": True,
+                "all_found": verification_result["all_found"],
+                "total_verified": verification_result["total_found"]
+            }
 
         # Include warnings if any
         if validation["warnings"]:

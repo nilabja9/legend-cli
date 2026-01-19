@@ -108,3 +108,21 @@ class ModificationError(MCPError):
 
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
         super().__init__(message, code="MODIFICATION_ERROR", details=details)
+
+
+class PartialPushError(MCPError):
+    """Some entities failed to push to SDLC."""
+
+    def __init__(
+        self,
+        message: str,
+        succeeded: Optional[list] = None,
+        failed: Optional[list] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        error_details = details or {}
+        error_details["succeeded"] = succeeded or []
+        error_details["failed"] = failed or []
+        super().__init__(message, code="PARTIAL_PUSH_ERROR", details=error_details)
+        self.succeeded = succeeded or []
+        self.failed = failed or []
