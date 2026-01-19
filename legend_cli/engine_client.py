@@ -76,11 +76,14 @@ class EngineClient:
             # Map element type to classifier path
             classifier_map = {
                 "class": "meta::pure::metamodel::type::Class",
+                "relational": "meta::relational::metamodel::Database",  # Engine returns "relational" for ###Relational Database
                 "relationalDatabase": "meta::relational::metamodel::Database",
                 "relationalDatabaseConnection": "meta::pure::runtime::PackageableConnection",
+                "connection": "meta::pure::runtime::PackageableConnection",  # Alternative type name
                 "mapping": "meta::pure::mapping::Mapping",
                 "function": "meta::pure::metamodel::function::ConcreteFunctionDefinition",
                 "packageableRuntime": "meta::pure::runtime::PackageableRuntime",
+                "runtime": "meta::pure::runtime::PackageableRuntime",  # Alternative type name
                 "association": "meta::pure::metamodel::relationship::Association",
                 "profile": "meta::pure::metamodel::extension::Profile",
                 "enumeration": "meta::pure::metamodel::type::Enumeration",
