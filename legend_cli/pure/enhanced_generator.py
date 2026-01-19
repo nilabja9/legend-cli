@@ -91,7 +91,7 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         if not self.spec or not self.spec.enumerations:
             return ""
 
-        enum_defs = []
+        enum_defs = ["###Pure"]
 
         for enum in self.spec.enumerations:
             if not enum.values:
@@ -123,7 +123,7 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         Returns:
             Pure code for all classes with enhanced features
         """
-        class_defs = []
+        class_defs = ["###Pure"]
         generated_base_classes: Set[str] = set()
 
         # First, generate base classes for hierarchies (if not actual tables)
@@ -302,16 +302,16 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         base_class: Optional[str],
     ) -> str:
         """Build the class declaration line with optional doc and extends."""
-        parts = []
+        parts = ["Class"]
 
-        # Doc annotation
+        # Doc annotation comes after Class keyword
         if class_doc:
             escaped_doc = self._escape_doc_string(class_doc)
             parts.append(f"{{meta::pure::profiles::doc.doc = '{escaped_doc}'}}")
 
         # Full class path
         class_path = f"{self.package_prefix}::domain::{class_name}"
-        parts.append(f"Class {class_path}")
+        parts.append(class_path)
 
         # Extends clause
         if base_class:

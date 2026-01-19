@@ -49,7 +49,7 @@ class PureCodeGenerator:
             docs: Optional dictionary mapping class names to ClassDocumentation objects.
                   If provided, doc.doc tagged values will be added to classes and properties.
         """
-        class_defs = []
+        class_defs = ["###Pure"]
 
         for schema in self.database.schemas:
             for table in schema.tables:
@@ -111,7 +111,7 @@ class PureCodeGenerator:
         if not self.database.relationships:
             return ""
 
-        association_defs = []
+        association_defs = ["###Pure"]
         seen_associations = set()
 
         for rel in self.database.relationships:
