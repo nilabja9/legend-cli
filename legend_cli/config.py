@@ -38,6 +38,24 @@ class Settings(BaseSettings):
         description="Claude model to use for code generation"
     )
 
+    # MCP logging configuration
+    mcp_logging_enabled: bool = Field(
+        default=True,
+        description="Enable database logging for MCP tool calls"
+    )
+    mcp_logging_db_path: Optional[str] = Field(
+        default=None,
+        description="Path to MCP logs database file (default: ~/.legend-cli/mcp_logs.db)"
+    )
+    mcp_logging_retention_days: int = Field(
+        default=30,
+        description="Number of days to retain MCP log entries"
+    )
+    mcp_logging_max_result_size: int = Field(
+        default=10000,
+        description="Maximum size of result/parameter strings to store in logs"
+    )
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

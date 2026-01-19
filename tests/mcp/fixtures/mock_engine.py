@@ -307,3 +307,142 @@ def create_mock_engine_with_bug() -> MockEngineClient:
     })
 
     return mock
+
+
+class MockEngineClientWithCodeError(MockEngineClient):
+    """MockEngineClient that can return codeError responses."""
+
+    def __init__(self):
+        super().__init__()
+        self._code_error_responses: Dict[str, Dict[str, Any]] = {}
+        self._default_code_error: Optional[Dict[str, Any]] = None
+
+    def add_code_error_response(self, code_pattern: str, error_response: Dict[str, Any]):
+        """Add a codeError response for a specific code pattern.
+
+        Args:
+            code_pattern: Regex pattern to match against Pure code
+            error_response: codeError response to return when pattern matches
+        """
+        self._code_error_responses[code_pattern] = error_response
+
+    def set_default_code_error(self, error_response: Dict[str, Any]):
+        """Set a default codeError response."""
+        self._default_code_error = error_response
+
+    def grammar_to_json(self, pure_code: str) -> Dict[str, Any]:
+        """Mock grammar_to_json that can return codeError responses."""
+        self._call_history.append({"method": "grammar_to_json", "code": pure_code})
+
+        # Check for codeError patterns first
+        for pattern, error_response in self._code_error_responses.items():
+            compiled_pattern = re.compile(pattern, re.DOTALL)
+            if compiled_pattern.search(pure_code):
+                return error_response
+
+        # Return default codeError if set
+        if self._default_code_error:
+            return self._default_code_error
+
+        # Fall back to parent behavior
+        return super().grammar_to_json(pure_code)
+
+
+def create_mock_engine_with_code_error(
+    error_message: str = "Parsing error: unexpected token",
+    start_line: int = 10,
+    start_column: int = 5,
+    end_line: int = 10,
+    end_column: int = 20,
+) -> MockEngineClientWithCodeError:
+    """Create a MockEngineClient that returns a codeError response.
+
+    Args:
+        error_message: The error message to return
+        start_line: Error start line number
+        start_column: Error start column number
+        end_line: Error end line number
+        end_column: Error end column number
+
+    Returns:
+        MockEngineClient configured to return codeError
+    """
+    mock = MockEngineClientWithCodeError()
+
+    mock.set_default_code_error({
+        "codeError": {
+            "message": error_message,
+            "sourceInformation": {
+                "startLine": start_line,
+                "startColumn": start_column,
+                "endLine": end_line,
+                "endColumn": end_column,
+            }
+        },
+        "isolatedLambdas": {},
+        "renderStyle": "STANDARD"
+    })
+
+    return mock
+
+
+def create_mock_engine_with_invalid_syntax() -> MockEngineClientWithCodeError:
+    """Create a MockEngineClient configured for common syntax error scenarios.
+
+    Returns a mock that returns codeError for patterns that look like invalid syntax:
+    - INVALID keyword
+    - Unclosed braces
+    - Missing semicolons in certain contexts
+    """
+    mock = MockEngineClientWithCodeError()
+
+    # Pattern for INVALID keyword
+    mock.add_code_error_response(
+        r"INVALID",
+        {
+            "codeError": {
+                "message": "Unexpected token 'INVALID'",
+                "sourceInformation": {
+                    "startLine": 5,
+                    "startColumn": 10,
+                    "endLine": 5,
+                    "endColumn": 17,
+                }
+            },
+            "isolatedLambdas": {},
+            "renderStyle": "STANDARD"
+        }
+    )
+
+    # Pattern for unclosed brace
+    mock.add_code_error_response(
+        r"\{\s*$",
+        {
+            "codeError": {
+                "message": "Expected '}' but found end of file",
+                "sourceInformation": {
+                    "startLine": 1,
+                    "startColumn": 1,
+                    "endLine": 1,
+                    "endColumn": 1,
+                }
+            },
+            "isolatedLambdas": {},
+            "renderStyle": "STANDARD"
+        }
+    )
+
+    # Set default successful response for valid code
+    mock.set_default_response({
+        "modelDataContext": {
+            "elements": [
+                {
+                    "_type": "class",
+                    "package": "model::domain",
+                    "name": "TestClass"
+                }
+            ]
+        }
+    })
+
+    return mock

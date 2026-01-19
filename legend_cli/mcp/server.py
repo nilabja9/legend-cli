@@ -5,7 +5,8 @@ Claude Desktop to interact with Legend for model generation and modification.
 """
 
 import logging
-from typing import Any
+import time
+from typing import Any, Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -18,6 +19,9 @@ from mcp.types import (
 
 from .context import get_context, reset_context
 from .tools import database, model_generation, sdlc, preview, model_modification
+from .tools import logging as logging_tools
+from .logging import MCPLogService
+from legend_cli.config import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +29,28 @@ logger = logging.getLogger(__name__)
 
 # Create the MCP server instance
 server = Server("legend-cli")
+
+# Global log service instance
+_log_service: Optional[MCPLogService] = None
+
+
+def get_log_service() -> Optional[MCPLogService]:
+    """Get the global log service instance."""
+    return _log_service
+
+
+def initialize_log_service() -> MCPLogService:
+    """Initialize the MCP logging service."""
+    global _log_service
+    _log_service = MCPLogService(
+        db_path=settings.mcp_logging_db_path,
+        retention_days=settings.mcp_logging_retention_days,
+        max_result_size=settings.mcp_logging_max_result_size,
+        enabled=settings.mcp_logging_enabled,
+    )
+    if settings.mcp_logging_enabled:
+        logger.info("MCP logging enabled")
+    return _log_service
 
 
 # =============================================================================
@@ -51,6 +77,9 @@ async def list_tools() -> list[Tool]:
     # Model modification tools
     tools.extend(model_modification.get_tools())
 
+    # Logging tools
+    tools.extend(logging_tools.get_tools())
+
     return tools
 
 
@@ -58,6 +87,21 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Handle tool calls."""
     ctx = get_context()
+    log_service = get_log_service()
+
+    # Start logging
+    start_time = time.time()
+    log_id = -1
+    if log_service and log_service.enabled:
+        context_data = {
+            "project_id": ctx.current_project_id,
+            "workspace_id": ctx.current_workspace_id,
+        }
+        log_id = await log_service.log_tool_start(
+            tool_name=name,
+            params=arguments,
+            context=context_data,
+        )
 
     try:
         # Database tools
@@ -134,12 +178,36 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "update_entity":
             result = await model_modification.update_entity(ctx, **arguments)
 
+        # Logging tools
+        elif name == "query_mcp_logs":
+            result = await logging_tools.query_mcp_logs(ctx, **arguments)
+        elif name == "get_mcp_log_stats":
+            result = await logging_tools.get_mcp_log_stats(ctx, **arguments)
+
         else:
             result = f"Unknown tool: {name}"
+
+        # Log successful completion
+        if log_service and log_service.enabled and log_id >= 0:
+            duration_ms = int((time.time() - start_time) * 1000)
+            await log_service.log_tool_success(
+                log_id=log_id,
+                result=result,
+                duration_ms=duration_ms,
+            )
 
         return [TextContent(type="text", text=str(result))]
 
     except Exception as e:
+        # Log error
+        if log_service and log_service.enabled and log_id >= 0:
+            duration_ms = int((time.time() - start_time) * 1000)
+            await log_service.log_tool_error(
+                log_id=log_id,
+                error=e,
+                duration_ms=duration_ms,
+            )
+
         logger.exception(f"Error in tool {name}")
         return [TextContent(type="text", text=f"Error: {str(e)}")]
 
@@ -285,12 +353,24 @@ async def run_server():
     # Reset context for fresh session
     reset_context()
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
+    # Initialize logging service
+    log_service = initialize_log_service()
+
+    # Run cleanup of old logs on startup
+    if log_service and log_service.enabled:
+        await log_service.cleanup_old_logs()
+
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options()
+            )
+    finally:
+        # Clean up log service
+        if log_service:
+            log_service.close()
 
 
 def main():

@@ -11,7 +11,7 @@ from typing import Any, List, Optional
 from mcp.types import Tool
 
 from ..context import MCPContext
-from ..errors import SDLCError, WorkspaceNotFoundError, ProjectNotFoundError, PartialPushError
+from ..errors import SDLCError, WorkspaceNotFoundError, ProjectNotFoundError, PartialPushError, EngineParseError
 
 logger = logging.getLogger(__name__)
 
@@ -491,22 +491,51 @@ async def push_artifacts(
                         parse_diagnostics[artifact_type] = diag_result
                         diag_msg = diag_result.get("diagnostic", "No diagnostic available")
                         parse_errors.append(f"Artifact '{artifact_type}' parsed but returned 0 entities. Diagnostic: {diag_msg}")
+                except EngineParseError as parse_err:
+                    # Handle parsing errors with detailed location information
+                    logger.error(
+                        "Parsing error in artifact '%s': %s at %s",
+                        artifact_type,
+                        parse_err.message,
+                        parse_err.get_formatted_location(),
+                    )
+                    error_msg = f"'{artifact_type}' has syntax error: {parse_err.message}"
+                    if parse_err.source_info:
+                        error_msg += f" (at {parse_err.get_formatted_location()})"
+                    parse_errors.append(error_msg)
+                    parse_diagnostics[artifact_type] = {
+                        "error": parse_err.message,
+                        "location": parse_err.get_formatted_location(),
+                        "source_info": parse_err.source_info,
+                    }
                 except Exception as parse_err:
                     logger.error("Failed to parse artifact '%s': %s", artifact_type, str(parse_err))
                     parse_errors.append(f"Failed to parse '{artifact_type}': {str(parse_err)}")
 
         if parse_errors:
+            # Build suggestion with line info if available
+            suggestion = "Use 'preview_changes' to review the generated Pure code, or 'validate_pure_code' to check syntax."
+            for diag in parse_diagnostics.values():
+                if diag.get("location"):
+                    suggestion += f" Check {diag.get('location')} for the error."
+                    break
+
             response_data = {
                 "status": "parse_error",
                 "errors": parse_errors,
                 "successfully_parsed": parsed_by_type,
                 "message": "Some artifacts failed to parse. Please check the Pure code syntax.",
-                "suggestion": "Use 'preview_changes' to review the generated Pure code, or 'validate_pure_code' to check syntax."
+                "suggestion": suggestion,
             }
-            # Include diagnostics for failed parses (excluding raw_response to keep response size manageable)
+            # Include diagnostics for failed parses
             if parse_diagnostics:
                 response_data["diagnostics"] = {
-                    k: {"diagnostic": v.get("diagnostic"), "error": v.get("error")}
+                    k: {
+                        "error": v.get("error"),
+                        "location": v.get("location"),
+                        "source_info": v.get("source_info"),
+                        "diagnostic": v.get("diagnostic"),
+                    }
                     for k, v in parse_diagnostics.items()
                 }
             return json.dumps(response_data)

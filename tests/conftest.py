@@ -274,3 +274,62 @@ def pending_artifacts_full_model(
         PendingArtifact(artifact_type="connection", pure_code=sample_connection_pure_code),
         PendingArtifact(artifact_type="mapping", pure_code=sample_mapping_pure_code),
     ]
+
+
+@pytest.fixture
+def mock_engine_code_error_response():
+    """Mock Engine API response with codeError (parsing failure)."""
+    return {
+        "codeError": {
+            "message": "Parsing error: unexpected token 'INVALID'",
+            "sourceInformation": {
+                "startLine": 10,
+                "startColumn": 5,
+                "endLine": 10,
+                "endColumn": 20,
+            }
+        },
+        "isolatedLambdas": {},
+        "renderStyle": "STANDARD"
+    }
+
+
+@pytest.fixture
+def mock_engine_code_error_multiline():
+    """Mock Engine API response with codeError spanning multiple lines."""
+    return {
+        "codeError": {
+            "message": "Expected '}' to close block",
+            "sourceInformation": {
+                "startLine": 5,
+                "startColumn": 1,
+                "endLine": 10,
+                "endColumn": 15,
+            }
+        },
+        "isolatedLambdas": {},
+        "renderStyle": "STANDARD"
+    }
+
+
+@pytest.fixture
+def sample_invalid_pure_code():
+    """Sample Pure code with syntax error."""
+    return '''###Pure
+Class model::domain::User
+{
+  id: Integer[1];
+  INVALID SYNTAX HERE
+  name: String[1];
+}'''
+
+
+@pytest.fixture
+def sample_unclosed_pure_code():
+    """Sample Pure code with unclosed brace."""
+    return '''###Pure
+Class model::domain::User
+{
+  id: Integer[1];
+  name: String[1];
+'''

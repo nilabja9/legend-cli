@@ -42,13 +42,38 @@ class EngineClient:
         self.close()
 
     def grammar_to_json(self, pure_code: str) -> Dict[str, Any]:
-        """Convert Pure grammar to JSON protocol format."""
+        """Convert Pure grammar to JSON protocol format.
+
+        Raises:
+            EngineParseError: If the Engine API returns a codeError indicating
+                             a syntax or parsing error in the Pure code.
+        """
         response = self.client.post(
             "/pure/v1/grammar/transformGrammarToJson",
             json={"code": pure_code},
         )
         response.raise_for_status()
         result = response.json()
+
+        # Check for codeError in response - indicates parsing failure
+        if "codeError" in result and result["codeError"]:
+            code_error = result["codeError"]
+            error_message = code_error.get("message", "Unknown parsing error")
+            source_info = code_error.get("sourceInformation", {})
+
+            logger.error(
+                "Pure code parsing error: %s at line %s, column %s",
+                error_message,
+                source_info.get("startLine", "?"),
+                source_info.get("startColumn", "?"),
+            )
+
+            from legend_cli.mcp.errors import EngineParseError
+            raise EngineParseError(
+                message=error_message,
+                source_info=source_info,
+                raw_error=code_error,
+            )
 
         # Debug logging for response structure
         logger.debug("grammar_to_json response keys: %s", list(result.keys()))
@@ -85,11 +110,31 @@ class EngineClient:
         - modelDataContext.elements (standard)
         - modelDataContext.stores (alternative for Database definitions)
         - pureModelContextData.elements (alternative structure)
+
+        Raises:
+            EngineParseError: If codeError is present in the response (defensive check).
         """
         entities = []
 
         # Log input structure for debugging
         logger.debug("extract_entities input keys: %s", list(grammar_result.keys()))
+
+        # Defensive check: if codeError is present, this shouldn't be called
+        # but raise an error just in case it wasn't caught upstream
+        if "codeError" in grammar_result and grammar_result["codeError"]:
+            code_error = grammar_result["codeError"]
+            error_message = code_error.get("message", "Unknown parsing error")
+            source_info = code_error.get("sourceInformation", {})
+            logger.error(
+                "extract_entities called with codeError present: %s",
+                error_message,
+            )
+            from legend_cli.mcp.errors import EngineParseError
+            raise EngineParseError(
+                message=error_message,
+                source_info=source_info,
+                raw_error=code_error,
+            )
 
         # Collect elements from all possible locations
         all_elements = []
@@ -248,12 +293,18 @@ class EngineClient:
                 - diagnostic: Human-readable diagnostic info
                 - entities: Extracted entities (if any)
                 - error: Error message (if parsing failed)
+                - code_error: codeError dict from Engine (if present)
+                - error_location: Formatted error location (if codeError present)
         """
+        from legend_cli.mcp.errors import EngineParseError
+
         result = {
             "raw_response": None,
             "diagnostic": "",
             "entities": [],
             "error": None,
+            "code_error": None,
+            "error_location": None,
         }
 
         try:
@@ -302,6 +353,16 @@ class EngineClient:
             if not entities:
                 result["error"] = "No entities extracted from response"
 
+        except EngineParseError as parse_err:
+            # Handle parsing errors specifically - include detailed location info
+            result["error"] = parse_err.get_user_friendly_message()
+            result["code_error"] = parse_err.raw_error
+            result["error_location"] = parse_err.get_formatted_location()
+            result["diagnostic"] = (
+                f"Parse failed: {parse_err.message}\n"
+                f"Location: {parse_err.get_formatted_location()}\n"
+                f"Source info: {parse_err.source_info}"
+            )
         except Exception as e:
             result["error"] = str(e)
             result["diagnostic"] = f"Parse failed with error: {e}"

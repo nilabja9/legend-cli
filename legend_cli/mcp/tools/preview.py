@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 from mcp.types import Tool
 
 from ..context import MCPContext
-from ..errors import ValidationError, EngineError
+from ..errors import ValidationError, EngineError, EngineParseError
 
 
 def get_tools() -> List[Tool]:
@@ -183,6 +183,17 @@ async def validate_pure_code(
                         "entities_found": len(entities),
                         "entity_paths": [e.get("path") for e in entities]
                     })
+                except EngineParseError as parse_err:
+                    # Handle parsing errors with detailed location information
+                    all_valid = False
+                    validation_results.append({
+                        "type": code_type,
+                        "valid": False,
+                        "error": parse_err.message,
+                        "location": parse_err.get_formatted_location(),
+                        "source_info": parse_err.source_info,
+                        "user_message": parse_err.get_user_friendly_message(),
+                    })
                 except Exception as e:
                     all_valid = False
                     error_msg = str(e)
@@ -296,6 +307,17 @@ async def validate_model_completeness(ctx: MCPContext) -> str:
                         "valid": True,
                         "entity_count": len(entities),
                         "entity_paths": [e.get("path") for e in entities]
+                    })
+                except EngineParseError as parse_err:
+                    # Handle parsing errors with location info
+                    error_msg = parse_err.get_user_friendly_message()
+                    parse_errors.append(f"Failed to parse '{artifact.artifact_type}': {error_msg}")
+                    parse_results.append({
+                        "artifact_type": artifact.artifact_type,
+                        "valid": False,
+                        "error": parse_err.message,
+                        "location": parse_err.get_formatted_location(),
+                        "source_info": parse_err.source_info,
                     })
                 except Exception as parse_err:
                     error_msg = str(parse_err)

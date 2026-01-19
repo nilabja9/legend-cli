@@ -63,6 +63,50 @@ class EngineError(MCPError):
         super().__init__(message, code="ENGINE_ERROR", details=details)
 
 
+class EngineParseError(EngineError):
+    """Specific error for Pure code parsing failures from Engine API.
+
+    Raised when the Engine API returns a codeError in the response,
+    indicating a syntax or parsing error in the Pure code.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        source_info: Optional[Dict[str, Any]] = None,
+        raw_error: Optional[Dict[str, Any]] = None,
+    ):
+        details = {
+            "source_info": source_info or {},
+            "raw_error": raw_error or {},
+        }
+        super().__init__(message, details=details)
+        self.code = "ENGINE_PARSE_ERROR"
+        self.source_info = source_info or {}
+        self.raw_error = raw_error or {}
+
+    def get_formatted_location(self) -> str:
+        """Return human-readable location string like 'Line X, columns Y-Z'."""
+        if not self.source_info:
+            return ""
+
+        start_line = self.source_info.get("startLine", "?")
+        start_col = self.source_info.get("startColumn", "?")
+        end_line = self.source_info.get("endLine", "?")
+        end_col = self.source_info.get("endColumn", "?")
+
+        if start_line == end_line:
+            return f"Line {start_line}, columns {start_col}-{end_col}"
+        return f"Lines {start_line}-{end_line}"
+
+    def get_user_friendly_message(self) -> str:
+        """Return a user-friendly error message with location info."""
+        location = self.get_formatted_location()
+        if location:
+            return f"{self.message} at {location}"
+        return self.message
+
+
 class ValidationError(MCPError):
     """Error during validation."""
 
