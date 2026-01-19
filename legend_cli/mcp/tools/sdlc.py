@@ -5,12 +5,15 @@ management and entity operations.
 """
 
 import json
+import logging
 from typing import Any, List, Optional
 
 from mcp.types import Tool
 
 from ..context import MCPContext
 from ..errors import SDLCError, WorkspaceNotFoundError, ProjectNotFoundError, PartialPushError
+
+logger = logging.getLogger(__name__)
 
 
 def get_tools() -> List[Tool]:
@@ -370,14 +373,20 @@ def _validate_artifacts(ctx: MCPContext) -> dict:
     }
 
 
-def _validate_parsed_entities(entities: list, artifact_types: set) -> dict:
+def _validate_parsed_entities(entities: list, artifact_types: set, parse_diagnostics: dict = None) -> dict:
     """Validate that parsed entities match expected artifact types.
+
+    Args:
+        entities: List of parsed entities
+        artifact_types: Set of artifact types expected to be present
+        parse_diagnostics: Optional dict with diagnostic info from parsing (e.g., from debug_parse_response)
 
     Returns dict with:
         - valid: bool
         - errors: list of error messages
         - entity_types: dict mapping classifier to count
         - missing: list of expected but missing types
+        - diagnostics: Additional diagnostic information
     """
     errors = []
     entity_types = {}
@@ -401,13 +410,21 @@ def _validate_parsed_entities(entities: list, artifact_types: set) -> dict:
         expected_classifier = artifact_to_classifier.get(artifact_type)
         if expected_classifier and expected_classifier not in entity_types:
             missing.append(artifact_type)
-            errors.append(f"Artifact type '{artifact_type}' was in pending artifacts but no entity with classifier '{expected_classifier}' was parsed. This may indicate a parsing error in the Pure code.")
+            error_msg = f"Artifact type '{artifact_type}' was in pending artifacts but no entity with classifier '{expected_classifier}' was parsed."
+            if parse_diagnostics and artifact_type in parse_diagnostics:
+                diag = parse_diagnostics[artifact_type]
+                error_msg += f" Diagnostic: {diag.get('diagnostic', 'N/A')}"
+            errors.append(error_msg)
+
+    # Log validation results
+    logger.debug("Entity validation: %d entities, types=%s, missing=%s", len(entities), list(entity_types.keys()), missing)
 
     return {
         "valid": len(errors) == 0,
         "errors": errors,
         "entity_types": entity_types,
-        "missing": missing
+        "missing": missing,
+        "diagnostics": parse_diagnostics or {}
     }
 
 
@@ -446,6 +463,7 @@ async def push_artifacts(
         # Step 2: Parse all Pure code through Engine with error tracking
         parse_errors = []
         parsed_by_type = {}
+        parse_diagnostics = {}  # Store diagnostics for failed parses
 
         with EngineClient() as engine:
             pure_codes = {}
@@ -456,24 +474,42 @@ async def push_artifacts(
             # Parse each artifact separately to track failures
             all_entities = []
             for artifact_type, code in pure_codes.items():
+                # Log artifact being parsed (truncated for readability)
+                code_preview = code[:200] + "..." if len(code) > 200 else code
+                logger.debug("Parsing artifact '%s': %s", artifact_type, code_preview.replace('\n', '\\n'))
+
                 try:
                     entities = engine.parse_pure_code(code)
                     if entities:
                         all_entities.extend(entities)
                         parsed_by_type[artifact_type] = len(entities)
+                        logger.debug("Artifact '%s' parsed successfully: %d entities", artifact_type, len(entities))
                     else:
-                        parse_errors.append(f"Artifact '{artifact_type}' parsed but returned no entities")
+                        # Use debug_parse_response to get detailed diagnostics
+                        logger.warning("Artifact '%s' parsed but returned no entities, getting diagnostics", artifact_type)
+                        diag_result = engine.debug_parse_response(code)
+                        parse_diagnostics[artifact_type] = diag_result
+                        diag_msg = diag_result.get("diagnostic", "No diagnostic available")
+                        parse_errors.append(f"Artifact '{artifact_type}' parsed but returned 0 entities. Diagnostic: {diag_msg}")
                 except Exception as parse_err:
+                    logger.error("Failed to parse artifact '%s': %s", artifact_type, str(parse_err))
                     parse_errors.append(f"Failed to parse '{artifact_type}': {str(parse_err)}")
 
         if parse_errors:
-            return json.dumps({
+            response_data = {
                 "status": "parse_error",
                 "errors": parse_errors,
                 "successfully_parsed": parsed_by_type,
                 "message": "Some artifacts failed to parse. Please check the Pure code syntax.",
                 "suggestion": "Use 'preview_changes' to review the generated Pure code, or 'validate_pure_code' to check syntax."
-            })
+            }
+            # Include diagnostics for failed parses (excluding raw_response to keep response size manageable)
+            if parse_diagnostics:
+                response_data["diagnostics"] = {
+                    k: {"diagnostic": v.get("diagnostic"), "error": v.get("error")}
+                    for k, v in parse_diagnostics.items()
+                }
+            return json.dumps(response_data)
 
         if not all_entities:
             return json.dumps({
@@ -483,7 +519,7 @@ async def push_artifacts(
             })
 
         # Step 3: Validate parsed entities match expected types
-        entity_validation = _validate_parsed_entities(all_entities, validation["artifact_types"])
+        entity_validation = _validate_parsed_entities(all_entities, validation["artifact_types"], parse_diagnostics)
         if not entity_validation["valid"]:
             return json.dumps({
                 "status": "entity_validation_error",

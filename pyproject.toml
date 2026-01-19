@@ -46,3 +46,9 @@ legend-cli = "legend_cli.main:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["legend_cli*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
