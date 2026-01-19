@@ -31,6 +31,11 @@ from legend_cli.analysis.schema_analyzer import (
     AnalysisOptions,
     analyze_schema,
 )
+from legend_cli.analysis.relationship_analyzer import (
+    RelationshipAnalyzer,
+    DiscoveredRelationship,
+    discover_relationships,
+)
 
 __all__ = [
     # Models
@@ -52,4 +57,8 @@ __all__ = [
     "AnalysisContext",
     "AnalysisOptions",
     "analyze_schema",
+    # Relationship Discovery
+    "RelationshipAnalyzer",
+    "DiscoveredRelationship",
+    "discover_relationships",
 ]

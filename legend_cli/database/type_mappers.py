@@ -41,7 +41,8 @@ class SnowflakeTypeMapper(TypeMapper):
         elif "TIMESTAMP" in type_upper or "DATETIME" in type_upper:
             return "TIMESTAMP"
         elif "TIME" in type_upper:
-            return "TIME"
+            # TIME type is not supported by Legend Engine - map to TIMESTAMP
+            return "TIMESTAMP"
         return "VARCHAR(256)"
 
     def to_pure_property_type(self, db_type: str) -> str:
@@ -104,7 +105,9 @@ class DuckDBTypeMapper(TypeMapper):
         elif "TIMESTAMP" in type_upper:
             return "TIMESTAMP"
         elif type_upper == "TIME":
-            return "TIME"
+            # TIME type is not supported by Legend Engine - map to TIMESTAMP
+            # The time portion will be preserved, date will default to epoch
+            return "TIMESTAMP"
         elif "INTERVAL" in type_upper:
             return "VARCHAR(256)"  # Map intervals to string
 
@@ -145,8 +148,11 @@ class DuckDBTypeMapper(TypeMapper):
             return "Date"
         elif "TIMESTAMP" in type_upper:
             return "DateTime"
-        elif type_upper == "TIME" or "INTERVAL" in type_upper:
-            return "String"  # Time without date maps to String
+        elif type_upper == "TIME":
+            # TIME maps to DateTime since we map TIME column type to TIMESTAMP
+            return "DateTime"
+        elif "INTERVAL" in type_upper:
+            return "String"  # Intervals map to String
 
         # Binary types
         elif "BLOB" in type_upper or "BYTEA" in type_upper:

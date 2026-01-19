@@ -297,7 +297,7 @@ def get_tools() -> List[Tool]:
         ),
         Tool(
             name="generate_associations",
-            description="Generate Pure Association definitions from detected relationships.",
+            description="Generate Pure Association definitions from detected relationships. Can use LLM-based discovery when no foreign key constraints exist.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -314,6 +314,16 @@ def get_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Package prefix (default: 'model')",
                         "default": "model"
+                    },
+                    "use_llm": {
+                        "type": "boolean",
+                        "description": "Use LLM to discover relationships when no FK constraints exist (default: true)",
+                        "default": True
+                    },
+                    "confidence_threshold": {
+                        "type": "number",
+                        "description": "Minimum confidence for LLM-discovered relationships (0-1, default: 0.6)",
+                        "default": 0.6
                     },
                     "skip_database_prompt": {
                         "type": "boolean",
@@ -771,6 +781,8 @@ async def generate_associations(
     db_type: str,
     database: Optional[str] = None,
     package_prefix: str = "model",
+    use_llm: bool = True,
+    confidence_threshold: float = 0.6,
     skip_database_prompt: bool = False,
 ) -> str:
     """Generate association definitions."""
@@ -789,6 +801,32 @@ async def generate_associations(
 
         schema = _get_schema_or_error(ctx, db_type, database)
 
+        # Check if relationships exist from introspection
+        has_relationships = bool(schema.relationships)
+        discovery_method = "introspection"
+
+        # If no relationships and LLM is enabled, try LLM discovery
+        if not has_relationships and use_llm:
+            try:
+                from legend_cli.analysis.relationship_analyzer import RelationshipAnalyzer
+
+                analyzer = RelationshipAnalyzer()
+                discovered = analyzer.discover_and_update_database(
+                    schema,
+                    confidence_threshold=confidence_threshold,
+                )
+
+                if discovered:
+                    has_relationships = True
+                    discovery_method = "llm"
+
+            except Exception as llm_err:
+                # Log but don't fail - just continue without LLM discovery
+                import logging
+                logging.getLogger(__name__).warning(
+                    "LLM relationship discovery failed: %s", llm_err
+                )
+
         # Sanitize database name for Pure code
         schema.name = sanitize_pure_identifier(schema.name)
 
@@ -800,17 +838,34 @@ async def generate_associations(
                 "status": "success",
                 "artifact_type": "associations",
                 "code": "",
-                "message": "No relationships detected - no associations generated"
+                "relationships_found": 0,
+                "discovery_method": discovery_method,
+                "message": "No relationships detected - no associations generated",
+                "suggestion": "The database may not have foreign key constraints. Try using use_llm=true to discover relationships using AI analysis."
+                    if not use_llm else "LLM analysis did not find confident relationships. Check that table/column naming follows common patterns."
             })
 
         ctx.add_pending_artifact("associations", code)
+
+        # Build relationship details for response
+        relationship_details = [
+            {
+                "source": f"{r.source_table}.{r.source_column}",
+                "target": f"{r.target_table}.{r.target_column}",
+                "type": r.relationship_type,
+                "property": r.property_name,
+            }
+            for r in schema.relationships
+        ]
 
         return json.dumps({
             "status": "success",
             "artifact_type": "associations",
             "code": code,
             "relationship_count": len(schema.relationships),
-            "message": "Association definitions generated and added to pending artifacts"
+            "discovery_method": discovery_method,
+            "relationships": relationship_details,
+            "message": f"Generated {len(schema.relationships)} associations using {discovery_method} discovery"
         })
 
     except IntrospectionError:

@@ -50,7 +50,8 @@ class Column:
         elif "TIMESTAMP" in type_upper or "DATETIME" in type_upper:
             return "TIMESTAMP"
         elif "TIME" in type_upper:
-            return "TIME"
+            # TIME type is not supported by Legend Engine - map to TIMESTAMP
+            return "TIMESTAMP"
         else:
             return "VARCHAR(256)"
 
