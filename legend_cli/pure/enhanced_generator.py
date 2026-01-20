@@ -66,40 +66,12 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
                 self._base_class_map[derived] = hierarchy.base_class_name
 
         # Build enum map - map source columns directly
-        enum_source_tables: Dict[str, Any] = {}  # table_name -> enum
+        # NOTE: We only map the actual enum source columns, NOT FK columns
+        # FK columns (like CLIENT_TYPE_ID) should remain as Integer types
+        # Relationships are expressed via Associations, not by changing property types
         for enum in self.spec.enumerations:
             key = f"{enum.source_table}.{enum.source_column}"
             self._enum_map[key] = enum
-            # Track which tables are enum source tables
-            enum_source_tables[enum.source_table] = enum
-
-        # Also map FK columns that reference enum source tables
-        # Only map if the target table IS the enum source table (e.g., CLIENT_TYPE)
-        # and the relationship is a lookup relationship (source column name contains target table name)
-        if self.database.relationships:
-            for rel in self.database.relationships:
-                # If the target table is an enum source table, check if this is a type/status lookup
-                if rel.target_table in enum_source_tables:
-                    # Only map if the FK column name suggests it references the enum type
-                    # e.g., CLIENT_TYPE_ID should map to ClientType, but CLIENT_ID should not
-                    target_table_upper = rel.target_table.upper()
-                    source_col_upper = rel.source_column.upper()
-
-                    # Check if the FK column name contains the target table name pattern
-                    # CLIENT_TYPE_ID contains CLIENT_TYPE -> yes
-                    # CLIENT_ID does not contain CLIENT_TYPE -> no
-                    is_type_lookup = (
-                        target_table_upper.replace("_", "") in source_col_upper.replace("_", "") or
-                        source_col_upper.startswith(target_table_upper.split("_")[0] + "_TYPE") or
-                        source_col_upper.endswith("_TYPE_ID") or
-                        source_col_upper.endswith("_STATUS_ID")
-                    )
-
-                    if is_type_lookup:
-                        enum = enum_source_tables[rel.target_table]
-                        fk_key = f"{rel.source_table}.{rel.source_column}"
-                        if fk_key not in self._enum_map:
-                            self._enum_map[fk_key] = enum
 
         # Build constraints map
         for constraint in self.spec.constraints:
@@ -122,10 +94,21 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         if not self.spec or not self.spec.enumerations:
             return ""
 
+        # Get all table class names to avoid conflicts
+        table_class_names = set()
+        for schema in self.database.schemas:
+            for table in schema.tables:
+                table_class_names.add(table.get_class_name())
+
         enum_defs = ["###Pure"]
 
         for enum in self.spec.enumerations:
             if not enum.values:
+                continue
+
+            # Skip enums that would conflict with table class names
+            # Reference tables (CLIENT_TYPE, TRADE_STATUS) should be Classes, not Enums
+            if enum.name in table_class_names:
                 continue
 
             lines = [f"Enum {self.package_prefix}::domain::{enum.name}"]

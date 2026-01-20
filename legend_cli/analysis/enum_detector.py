@@ -87,22 +87,24 @@ class EnumDetector:
         """
         candidates = []
 
-        # Step 1: Pattern-based detection from column names
-        column_candidates = self._detect_from_column_patterns(database)
-        candidates.extend(column_candidates)
+        # NOTE: Column pattern detection and reference table detection are DISABLED
+        # because they create conflicts:
+        # - Reference tables (CLIENT_TYPE, TRADE_STATUS) should be Classes, not Enums
+        # - FK columns (CLIENT_TYPE_ID) should be Integer, not Enum types
+        #
+        # Only cardinality detection and LLM detection are used to find actual
+        # enum columns (string columns with low cardinality like 'status', 'type')
 
-        # Step 2: Reference table detection
-        ref_table_candidates = self._detect_reference_tables(database)
-        candidates.extend(ref_table_candidates)
-
-        # Step 3: Low cardinality detection (if values available)
+        # Step 1: Low cardinality detection (if values available)
+        # This detects actual string columns with enum-like values
         if sample_values or value_fetcher:
             cardinality_candidates = self._detect_from_cardinality(
                 database, sample_values, value_fetcher
             )
             candidates.extend(cardinality_candidates)
 
-        # Step 4: LLM-based detection (if enabled)
+        # Step 2: LLM-based detection (if enabled)
+        # LLM can identify enum columns based on naming and context
         if use_llm:
             try:
                 llm_candidates = self._detect_with_llm(

@@ -517,7 +517,7 @@ async def generate_model(
     duckdb_host: str = "host.docker.internal",
     duckdb_port: int = 5433,
     skip_database_prompt: bool = False,
-    detect_hierarchies: bool = True,
+    detect_hierarchies: bool = False,  # Disabled - creates unmappable phantom classes
     detect_enums: bool = True,
     detect_constraints: bool = False,
     detect_derived: bool = False,
@@ -1058,10 +1058,10 @@ async def analyze_schema(
     db_type: str,
     database: str,
     documentation: Optional[str] = None,
-    detect_hierarchies: bool = True,
+    detect_hierarchies: bool = False,  # Disabled - creates unmappable phantom classes
     detect_enums: bool = True,
-    detect_constraints: bool = True,
-    detect_derived: bool = True,
+    detect_constraints: bool = False,  # Disabled - unreliable LLM expressions
+    detect_derived: bool = False,  # Disabled - unreliable LLM expressions
     use_llm: bool = True,
     confidence_threshold: float = 0.7,
 ) -> str:

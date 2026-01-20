@@ -29,7 +29,7 @@ class AnalysisOptions:
     """Configuration options for schema analysis."""
 
     # Enable/disable individual analysis types
-    detect_hierarchies: bool = True
+    detect_hierarchies: bool = False  # Disabled by default - creates unmappable phantom classes
     detect_enums: bool = True
     detect_constraints: bool = False
     detect_derived: bool = False
