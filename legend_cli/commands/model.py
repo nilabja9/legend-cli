@@ -275,9 +275,11 @@ def generate_from_snowflake(
     else:
         console.print(f"\n[yellow]No relationships detected (no matching patterns found)[/yellow]")
 
-    # Step 2: Generate documentation (if requested)
+    # Step 2: Generate documentation
+    # In enhanced mode, auto-generate docs from field names by default
+    should_generate_docs = doc_source or auto_docs or enhanced
     docs = None
-    if doc_source or auto_docs:
+    if should_generate_docs:
         console.print("\n[blue]Generating documentation...[/blue]")
 
         # Collect all tables for documentation
@@ -731,9 +733,11 @@ def generate_from_duckdb(
     else:
         console.print(f"\n[yellow]No relationships detected (no matching patterns found)[/yellow]")
 
-    # Step 2: Generate documentation (if requested)
+    # Step 2: Generate documentation
+    # In enhanced mode, auto-generate docs from field names by default
+    should_generate_docs = doc_source or auto_docs or enhanced
     docs = None
-    if doc_source or auto_docs:
+    if should_generate_docs:
         console.print("\n[blue]Generating documentation...[/blue]")
 
         # Collect all tables for documentation

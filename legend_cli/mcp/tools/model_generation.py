@@ -44,6 +44,62 @@ def _needs_database_input_response(db_type: str, tool_name: str) -> str:
     })
 
 
+def _generate_docs_from_schema(
+    schema: "Database",
+    doc_reference: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Generate documentation for classes and attributes.
+
+    If doc_reference is provided (URL or PDF path), uses it as reference.
+    Otherwise, generates documentation from field names using AI.
+
+    Args:
+        schema: Database schema object
+        doc_reference: Optional URL or PDF path for reference documentation
+
+    Returns:
+        Dictionary mapping class names to ClassDocumentation objects
+    """
+    import asyncio
+    from legend_cli.doc_generator import DocGenerator
+
+    try:
+        # Collect all tables
+        all_tables = []
+        for schema_obj in schema.schemas:
+            all_tables.extend(schema_obj.tables)
+
+        if not all_tables:
+            logger.warning("No tables found for documentation generation")
+            return None
+
+        doc_gen = DocGenerator()
+
+        if doc_reference:
+            # Parse the reference source (URL or PDF)
+            logger.info("Generating documentation from reference: %s", doc_reference)
+            try:
+                doc_sources = asyncio.get_event_loop().run_until_complete(
+                    doc_gen.parse_sources([doc_reference])
+                )
+                docs = doc_gen.generate_class_docs(all_tables, doc_sources, generate_fallback=True)
+            except Exception as parse_err:
+                logger.warning("Failed to parse doc reference %s: %s. Falling back to name-based generation.",
+                             doc_reference, str(parse_err))
+                docs = doc_gen.generate_docs_from_names_only(all_tables)
+        else:
+            # Generate from names only
+            logger.info("Generating documentation from field names...")
+            docs = doc_gen.generate_docs_from_names_only(all_tables)
+
+        logger.info("Generated documentation for %d classes", len(docs))
+        return docs
+
+    except Exception as e:
+        logger.warning("Documentation generation failed: %s", str(e))
+        return None
+
+
 def _populate_enum_values(
     enhanced_spec,
     db_type: "DatabaseType",
@@ -151,8 +207,12 @@ def get_tools() -> List[Tool]:
                     },
                     "generate_docs": {
                         "type": "boolean",
-                        "description": "Generate doc.doc annotations. Default: true",
+                        "description": "Generate doc.doc annotations for classes and attributes. Default: true",
                         "default": True
+                    },
+                    "doc_reference": {
+                        "type": "string",
+                        "description": "Optional URL or PDF path to use as documentation reference. If not provided, docs are generated from field names."
                     },
                     "snowflake_account": {
                         "type": "string",
@@ -511,6 +571,7 @@ async def generate_model(
     package_prefix: str = "model",
     enhanced: bool = True,
     generate_docs: bool = True,
+    doc_reference: Optional[str] = None,
     snowflake_account: Optional[str] = None,
     snowflake_warehouse: Optional[str] = None,
     snowflake_role: Optional[str] = None,
@@ -647,8 +708,10 @@ async def generate_model(
                 enhanced_spec = None
                 enhanced_summary = {"error": str(e)}
 
-        # Generate all artifacts using appropriate generator
-        docs = None  # Doc generation could be added here
+        # Generate documentation if requested
+        docs = None
+        if generate_docs:
+            docs = _generate_docs_from_schema(schema, doc_reference)
 
         if enhanced_spec:
             # Use enhanced generator
