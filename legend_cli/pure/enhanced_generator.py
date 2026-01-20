@@ -49,6 +49,7 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         # Build lookup maps from spec
         self._base_class_map: Dict[str, str] = {}  # derived -> base
         self._enum_map: Dict[str, EnumerationCandidate] = {}  # table.col -> enum
+        self._enum_column_patterns: Dict[str, str] = {}  # COLUMN_NAME pattern -> enum name
         self._constraints_map: Dict[str, List[ConstraintSuggestion]] = {}  # class -> constraints
         self._derived_map: Dict[str, List[DerivedPropertySuggestion]] = {}  # class -> derived
 
@@ -60,6 +61,12 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         if not self.spec:
             return
 
+        # Get table class names to filter out conflicting enums
+        table_class_names = set()
+        for schema in self.database.schemas:
+            for table in schema.tables:
+                table_class_names.add(table.get_class_name())
+
         # Build inheritance map
         for hierarchy in self.spec.hierarchies:
             for derived in hierarchy.derived_classes:
@@ -70,8 +77,29 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         # FK columns (like CLIENT_TYPE_ID) should remain as Integer types
         # Relationships are expressed via Associations, not by changing property types
         for enum in self.spec.enumerations:
+            # Skip enums that conflict with table class names
+            if enum.name in table_class_names:
+                continue
+
             key = f"{enum.source_table}.{enum.source_column}"
             self._enum_map[key] = enum
+
+            # Also build column name pattern mapping
+            # Convert CamelCase enum name to UPPER_SNAKE_CASE column pattern
+            pattern = self._camel_to_upper_snake_static(enum.name)
+            self._enum_column_patterns[pattern] = enum.name
+            # Add variations without common suffixes
+            for suffix in ['_TYPE', '_STATUS', '_CODE', '_KIND', '_MODE']:
+                if pattern.endswith(suffix):
+                    base_pattern = pattern[:-len(suffix)]
+                    self._enum_column_patterns[base_pattern] = enum.name
+
+    @staticmethod
+    def _camel_to_upper_snake_static(name: str) -> str:
+        """Convert CamelCase to UPPER_SNAKE_CASE (static version)."""
+        import re
+        result = re.sub(r'(?<!^)(?=[A-Z])', '_', name)
+        return result.upper()
 
         # Build constraints map
         for constraint in self.spec.constraints:
@@ -369,6 +397,8 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
     ) -> Optional[str]:
         """Get the enum type for a column if one is defined.
 
+        Checks both explicit source table/column mapping and column name patterns.
+
         Args:
             table_name: Table name
             column_name: Column name
@@ -376,9 +406,25 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         Returns:
             Enum type name or None
         """
+        # First check explicit enum map
         key = f"{table_name}.{column_name}"
         enum = self._enum_map.get(key)
-        return enum.name if enum else None
+        if enum:
+            return enum.name
+
+        # Then check by column name pattern
+        col_upper = column_name.upper()
+        if col_upper in self._enum_column_patterns:
+            return self._enum_column_patterns[col_upper]
+
+        # Try with common suffix variations
+        for suffix in ['_TYPE', '_STATUS', '_CODE', '_KIND', '_MODE']:
+            if col_upper.endswith(suffix):
+                base = col_upper[:-len(suffix)]
+                if base in self._enum_column_patterns:
+                    return self._enum_column_patterns[base]
+
+        return None
 
     def _is_table_class(self, class_name: str) -> bool:
         """Check if a class name corresponds to an actual table."""
@@ -412,6 +458,16 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         """Convert UPPER_SNAKE_CASE to camelCase."""
         parts = name.lower().split("_")
         return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+    def _camel_to_upper_snake(self, name: str) -> str:
+        """Convert CamelCase to UPPER_SNAKE_CASE.
+
+        E.g., OrderType -> ORDER_TYPE, TradeSide -> TRADE_SIDE
+        """
+        import re
+        # Insert underscore before uppercase letters (except first)
+        result = re.sub(r'(?<!^)(?=[A-Z])', '_', name)
+        return result.upper()
 
     def _sanitize_pure_expression(self, expression: str) -> str:
         """Sanitize a Pure expression to fix common LLM-generated syntax issues.
@@ -473,14 +529,124 @@ class EnhancedPureCodeGenerator(PureCodeGenerator):
         return result
 
     def generate_enhanced_mapping(self) -> str:
-        """Generate mapping with enum type mappings.
+        """Generate mapping with EnumerationMapping blocks for enum columns.
 
         Returns:
-            Pure mapping code
+            Pure mapping code with proper EnumerationMapping support
         """
-        # For now, use base mapping
-        # Enum mappings typically handled in store definition
-        return self.generate_mapping()
+        lines = ["###Mapping"]
+        lines.append(f"Mapping {self.package_prefix}::mapping::{self.database.name}Mapping")
+        lines.append("(")
+
+        # Get valid enums (those that don't conflict with table class names)
+        table_class_names = set()
+        for schema in self.database.schemas:
+            for table in schema.tables:
+                table_class_names.add(table.get_class_name())
+
+        valid_enums = []
+        if self.spec and self.spec.enumerations:
+            for enum in self.spec.enumerations:
+                if enum.name not in table_class_names and enum.values:
+                    valid_enums.append(enum)
+
+        # Generate EnumerationMapping blocks first
+        # Note: enum_column_patterns are built in _build_lookup_maps as self._enum_column_patterns
+        for enum in valid_enums:
+            enum_path = f"{self.package_prefix}::domain::{enum.name}"
+            lines.append(f"  {enum_path}: EnumerationMapping")
+            lines.append("  {")
+
+            # Map each enum value to its database representation
+            # Use the enum value itself as the DB value (they should match in UPPER_CASE)
+            value_mappings = []
+            for value in enum.values:
+                # The DB value is the enum value itself (normalized UPPER_CASE)
+                value_mappings.append(f"    {value}: ['{value}']")
+
+            lines.append(",\n".join(value_mappings))
+            lines.append("  }")
+
+        # Generate class mappings
+        mapping_blocks = []
+        for schema in self.database.schemas:
+            for table in schema.tables:
+                class_name = table.get_class_name()
+                class_path = f"{self.package_prefix}::domain::{class_name}"
+                store_path = f"{self.package_prefix}::store::{self.database.name}"
+
+                block_lines = [f"  {class_path}: Relational"]
+                block_lines.append("  {")
+
+                # Primary key
+                if table.columns:
+                    pk_col = table.primary_key_columns[0] if table.primary_key_columns else table.columns[0].name
+                    block_lines.append("    ~primaryKey")
+                    block_lines.append("    (")
+                    block_lines.append(f"      [{store_path}]{schema.name}.{table.name}.{pk_col}")
+                    block_lines.append("    )")
+
+                block_lines.append(f"    ~mainTable [{store_path}]{schema.name}.{table.name}")
+
+                # Property mappings with EnumerationMapping for enum columns
+                prop_mappings = []
+                for col in table.columns:
+                    prop_name = table.get_property_name(col.name)
+                    col_path = f"[{store_path}]{schema.name}.{table.name}.{col.name}"
+
+                    # Check if this column maps to an enum
+                    # _get_enum_type_for_column checks both explicit mapping and column name patterns
+                    enum_type = self._get_enum_type_for_column(table.name, col.name)
+
+                    if enum_type and enum_type not in table_class_names:
+                        # Use EnumerationMapping syntax
+                        # Convert enum path to mapping reference (replace :: with _)
+                        enum_mapping_ref = f"{self.package_prefix}_domain_{enum_type}".replace("::", "_")
+                        prop_mappings.append(
+                            f"    {prop_name}: EnumerationMapping {enum_mapping_ref}: {col_path}"
+                        )
+                    else:
+                        prop_mappings.append(f"    {prop_name}: {col_path}")
+
+                block_lines.append(",\n".join(prop_mappings))
+                block_lines.append("  }")
+
+                mapping_blocks.append("\n".join(block_lines))
+
+        lines.append("\n".join(mapping_blocks))
+
+        # Add association mappings
+        if self.database.relationships:
+            lines.append("")
+            seen_associations = set()
+            for rel in self.database.relationships:
+                source_class = self.table_to_class.get(rel.source_table)
+                target_class = self.table_to_class.get(rel.target_table)
+
+                if not source_class or not target_class:
+                    continue
+
+                # Create a unique key for this association
+                assoc_key = (source_class, target_class, rel.property_name)
+                if assoc_key in seen_associations:
+                    continue
+                seen_associations.add(assoc_key)
+
+                assoc_name = f"{source_class}_{target_class}_{rel.property_name}"
+                assoc_path = f"{self.package_prefix}::domain::{assoc_name}"
+                store_path = f"{self.package_prefix}::store::{self.database.name}"
+                join_name = f"{rel.source_table}_{rel.target_table}"
+
+                lines.append(f"  {assoc_path}: Relational")
+                lines.append("  {")
+                lines.append(f"    AssociationMapping")
+                lines.append("    (")
+                lines.append(f"      {rel.property_name}: [{store_path}]@{join_name}")
+                lines.append("    )")
+                lines.append("  }")
+
+        lines.append(")")
+        return "\n".join(lines)
 
     def generate_all_enhanced(
         self,
