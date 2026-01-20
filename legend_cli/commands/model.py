@@ -183,8 +183,8 @@ def generate_from_snowflake(
     confidence: float = typer.Option(0.7, "--confidence", help="Minimum confidence threshold for suggestions (0.0-1.0)"),
     hierarchies: bool = typer.Option(True, "--hierarchies/--no-hierarchies", help="Detect class inheritance hierarchies"),
     enums: bool = typer.Option(True, "--enums/--no-enums", help="Detect enumeration candidates"),
-    constraints: bool = typer.Option(True, "--constraints/--no-constraints", help="Generate data constraints"),
-    derived: bool = typer.Option(True, "--derived/--no-derived", help="Detect derived properties"),
+    constraints: bool = typer.Option(False, "--constraints/--no-constraints", help="Generate data constraints (disabled by default)"),
+    derived: bool = typer.Option(False, "--derived/--no-derived", help="Detect derived properties (disabled by default)"),
 ):
     """
     Generate a complete Legend model from a Snowflake database.
@@ -634,8 +634,8 @@ def generate_from_duckdb(
     confidence: float = typer.Option(0.7, "--confidence", help="Minimum confidence threshold for suggestions (0.0-1.0)"),
     hierarchies: bool = typer.Option(True, "--hierarchies/--no-hierarchies", help="Detect class inheritance hierarchies"),
     enums: bool = typer.Option(True, "--enums/--no-enums", help="Detect enumeration candidates"),
-    constraints: bool = typer.Option(True, "--constraints/--no-constraints", help="Generate data constraints"),
-    derived: bool = typer.Option(True, "--derived/--no-derived", help="Detect derived properties"),
+    constraints: bool = typer.Option(False, "--constraints/--no-constraints", help="Generate data constraints (disabled by default)"),
+    derived: bool = typer.Option(False, "--derived/--no-derived", help="Detect derived properties (disabled by default)"),
 ):
     """
     Generate a complete Legend model from a DuckDB database.

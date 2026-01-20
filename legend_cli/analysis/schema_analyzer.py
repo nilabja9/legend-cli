@@ -31,8 +31,8 @@ class AnalysisOptions:
     # Enable/disable individual analysis types
     detect_hierarchies: bool = True
     detect_enums: bool = True
-    detect_constraints: bool = True
-    detect_derived: bool = True
+    detect_constraints: bool = False
+    detect_derived: bool = False
 
     # Use LLM for enhanced detection
     use_llm: bool = True
