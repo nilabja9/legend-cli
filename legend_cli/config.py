@@ -1,8 +1,36 @@
 """Configuration management for Legend CLI."""
 
+import os
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
+
+
+def _find_env_file() -> Optional[str]:
+    """Find .env file in multiple locations.
+
+    Search order:
+    1. Current working directory
+    2. ~/.legend-cli/.env
+    3. Package directory (where this file is located)
+    """
+    # Current directory
+    if os.path.exists(".env"):
+        return ".env"
+
+    # User config directory
+    user_env = Path.home() / ".legend-cli" / ".env"
+    if user_env.exists():
+        return str(user_env)
+
+    # Package directory
+    package_dir = Path(__file__).parent.parent
+    package_env = package_dir / ".env"
+    if package_env.exists():
+        return str(package_env)
+
+    return None
 
 
 class Settings(BaseSettings):
@@ -57,7 +85,7 @@ class Settings(BaseSettings):
     )
 
     class Config:
-        env_file = ".env"
+        env_file = _find_env_file()
         env_file_encoding = "utf-8"
 
 
