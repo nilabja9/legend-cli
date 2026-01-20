@@ -5,12 +5,15 @@ including stores, classes, connections, mappings, and runtimes.
 """
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from mcp.types import Tool
 
 from ..context import MCPContext, DatabaseType, sanitize_pure_identifier
 from ..errors import GenerationError, IntrospectionError
+
+logger = logging.getLogger(__name__)
 
 
 def _needs_database_input_response(db_type: str, tool_name: str) -> str:
@@ -102,6 +105,31 @@ def get_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "If true, generate classes only without store/connection when database is not provided",
                         "default": False
+                    },
+                    "detect_hierarchies": {
+                        "type": "boolean",
+                        "description": "Detect class inheritance hierarchies (enhanced mode). Default: true",
+                        "default": True
+                    },
+                    "detect_enums": {
+                        "type": "boolean",
+                        "description": "Detect enumeration candidates (enhanced mode). Default: true",
+                        "default": True
+                    },
+                    "detect_constraints": {
+                        "type": "boolean",
+                        "description": "Generate data constraints (enhanced mode). Default: false (may have syntax issues)",
+                        "default": False
+                    },
+                    "detect_derived": {
+                        "type": "boolean",
+                        "description": "Detect derived properties (enhanced mode). Default: false (may have syntax issues)",
+                        "default": False
+                    },
+                    "confidence_threshold": {
+                        "type": "number",
+                        "description": "Minimum confidence threshold for enhanced suggestions (0.0-1.0). Default: 0.7",
+                        "default": 0.7
                     }
                 },
                 "required": ["db_type"]
@@ -416,6 +444,11 @@ async def generate_model(
     duckdb_host: str = "host.docker.internal",
     duckdb_port: int = 5433,
     skip_database_prompt: bool = False,
+    detect_hierarchies: bool = True,
+    detect_enums: bool = True,
+    detect_constraints: bool = False,
+    detect_derived: bool = False,
+    confidence_threshold: float = 0.7,
 ) -> str:
     """Generate complete model from database."""
     # Check if database is needed
@@ -431,6 +464,7 @@ async def generate_model(
 
     try:
         from legend_cli.pure.generator import PureCodeGenerator
+        from legend_cli.pure.enhanced_generator import EnhancedPureCodeGenerator
         from legend_cli.pure.connections import SnowflakeConnectionGenerator, DuckDBConnectionGenerator
 
         db_type_enum = DatabaseType(db_type.lower())
@@ -455,9 +489,6 @@ async def generate_model(
         # Update the schema name to use sanitized version
         schema.name = db_name
 
-        # Create generator
-        generator = PureCodeGenerator(schema, package_prefix)
-
         # Generate connection code
         store_path = f"{package_prefix}::store::{db_name}"
 
@@ -481,13 +512,69 @@ async def generate_model(
                 port=duckdb_port,
             )
 
-        # Generate all artifacts
-        docs = None
-        if generate_docs and enhanced:
-            # Could integrate doc generation here
-            pass
+        # Run enhanced analysis if requested
+        enhanced_spec = None
+        enhanced_summary = {}
+        if enhanced:
+            try:
+                from legend_cli.analysis import SchemaAnalyzer, AnalysisContext, AnalysisOptions
 
-        artifacts = generator.generate_all(connection_code, docs=docs)
+                logger.info("Running enhanced schema analysis...")
+
+                # Configure analysis options
+                analysis_options = AnalysisOptions(
+                    detect_hierarchies=detect_hierarchies,
+                    detect_enums=detect_enums,
+                    detect_constraints=detect_constraints,
+                    detect_derived=detect_derived,
+                    use_llm=True,
+                    confidence_threshold=confidence_threshold,
+                )
+
+                # Run analysis
+                analyzer = SchemaAnalyzer(options=analysis_options)
+                context = AnalysisContext(
+                    database=schema,
+                    documentation=None,
+                    sql_queries=None,
+                )
+                enhanced_spec = analyzer.analyze(context)
+
+                # Build summary
+                enhanced_summary = {
+                    "hierarchies": len(enhanced_spec.hierarchies),
+                    "enumerations": len(enhanced_spec.enumerations),
+                    "constraints": len(enhanced_spec.constraints),
+                    "derived_properties": len(enhanced_spec.derived_properties),
+                }
+
+                logger.info(
+                    "Enhanced analysis complete: %d hierarchies, %d enums, %d constraints, %d derived",
+                    enhanced_summary["hierarchies"],
+                    enhanced_summary["enumerations"],
+                    enhanced_summary["constraints"],
+                    enhanced_summary["derived_properties"],
+                )
+
+            except Exception as e:
+                logger.warning("Enhanced analysis failed: %s. Continuing with basic generation.", str(e))
+                enhanced_spec = None
+                enhanced_summary = {"error": str(e)}
+
+        # Generate all artifacts using appropriate generator
+        docs = None  # Doc generation could be added here
+
+        if enhanced_spec:
+            # Use enhanced generator
+            generator = EnhancedPureCodeGenerator(schema, enhanced_spec=enhanced_spec, package_prefix=package_prefix)
+            artifacts = generator.generate_all_enhanced(
+                connection_code=connection_code,
+                docs=docs,
+            )
+        else:
+            # Use basic generator
+            generator = PureCodeGenerator(schema, package_prefix)
+            artifacts = generator.generate_all(connection_code, docs=docs)
 
         # Store pending artifacts
         ctx.clear_pending_artifacts()
@@ -495,10 +582,11 @@ async def generate_model(
             ctx.add_pending_artifact(artifact_type, code)
 
         # Build response
-        return json.dumps({
+        response = {
             "status": "success",
             "database": database,
             "package_prefix": package_prefix,
+            "enhanced_mode": enhanced and enhanced_spec is not None,
             "artifacts_generated": list(artifacts.keys()),
             "summary": {
                 "schemas": len(schema.schemas),
@@ -513,7 +601,12 @@ async def generate_model(
                 for artifact_type, code in artifacts.items()
             },
             "message": f"Generated {len(artifacts)} artifacts. Use preview_changes to review or push_artifacts to push to SDLC."
-        })
+        }
+
+        if enhanced_summary:
+            response["enhanced_analysis"] = enhanced_summary
+
+        return json.dumps(response)
 
     except Exception as e:
         raise GenerationError(f"Model generation failed: {str(e)}")
