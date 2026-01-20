@@ -125,3 +125,39 @@ class SnowflakeIntrospector(DatabaseIntrospector):
             return []
         finally:
             cursor.close()
+
+    def get_distinct_values(
+        self,
+        database: str,
+        schema: str,
+        table: str,
+        column: str,
+        limit: int = 50,
+    ) -> List[str]:
+        """Get distinct values from a column.
+
+        Args:
+            database: Database name
+            schema: Schema name
+            table: Table name
+            column: Column name
+            limit: Maximum number of values to return
+
+        Returns:
+            List of distinct non-null values as strings
+        """
+        conn = self.connect(database)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"""
+                SELECT DISTINCT "{column}"
+                FROM "{database}"."{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                LIMIT {limit}
+            """)
+            return [str(row[0]) for row in cursor.fetchall() if row[0] is not None]
+        except Exception as e:
+            print(f"Warning: Failed to fetch distinct values for {database}.{schema}.{table}.{column}: {e}")
+            return []
+        finally:
+            cursor.close()

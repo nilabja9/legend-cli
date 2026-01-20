@@ -250,3 +250,38 @@ class DuckDBIntrospector(DatabaseIntrospector):
             detector.detect_relationships()
 
         return db
+
+    def get_distinct_values(
+        self,
+        schema: str,
+        table: str,
+        column: str,
+        limit: int = 50,
+    ) -> List[str]:
+        """Get distinct values from a column.
+
+        Args:
+            schema: Schema name
+            table: Table name
+            column: Column name
+            limit: Maximum number of values to return
+
+        Returns:
+            List of distinct non-null values as strings
+        """
+        conn = self.connect()
+
+        try:
+            # Use parameterized query where possible, but DuckDB requires
+            # identifier quoting for schema/table/column names
+            result = conn.execute(f"""
+                SELECT DISTINCT "{column}"
+                FROM "{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                LIMIT {limit}
+            """).fetchall()
+
+            return [str(row[0]) for row in result if row[0] is not None]
+        except Exception as e:
+            print(f"Warning: Failed to fetch distinct values for {schema}.{table}.{column}: {e}")
+            return []

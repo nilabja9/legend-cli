@@ -44,6 +44,79 @@ def _needs_database_input_response(db_type: str, tool_name: str) -> str:
     })
 
 
+def _populate_enum_values(
+    enhanced_spec,
+    db_type: "DatabaseType",
+    database: str,
+    schema: "Database",
+) -> "EnhancedModelSpec":
+    """Populate enum candidates with actual values from the database.
+
+    Args:
+        enhanced_spec: EnhancedModelSpec with enum candidates
+        db_type: Database type (snowflake or duckdb)
+        database: Database path/name
+        schema: Database schema object
+
+    Returns:
+        Updated EnhancedModelSpec with populated enum values
+    """
+    from legend_cli.prompts.enum_templates import normalize_enum_value
+
+    # Get schema name (use first schema if multiple)
+    schema_name = schema.schemas[0].name if schema.schemas else "main"
+
+    try:
+        if db_type == DatabaseType.DUCKDB:
+            from legend_cli.database import DuckDBIntrospector
+            introspector = DuckDBIntrospector(database_path=database, read_only=True)
+        else:
+            from legend_cli.database import SnowflakeIntrospector
+            introspector = SnowflakeIntrospector()
+
+        for enum in enhanced_spec.enumerations:
+            if enum.values:
+                # Already has values, skip
+                continue
+
+            try:
+                # Fetch distinct values from the source table/column
+                if db_type == DatabaseType.DUCKDB:
+                    values = introspector.get_distinct_values(
+                        schema=schema_name,
+                        table=enum.source_table,
+                        column=enum.source_column,
+                        limit=50,
+                    )
+                else:
+                    values = introspector.get_distinct_values(
+                        database=database,
+                        schema=schema_name,
+                        table=enum.source_table,
+                        column=enum.source_column,
+                        limit=50,
+                    )
+
+                if values:
+                    # Normalize values to valid enum identifiers
+                    enum.values = [normalize_enum_value(v) for v in values]
+                    # Store original values as descriptions
+                    enum.value_descriptions = {
+                        normalize_enum_value(v): v for v in values
+                    }
+                    logger.debug("Populated %d values for enum %s from %s.%s",
+                                len(values), enum.name, enum.source_table, enum.source_column)
+            except Exception as e:
+                logger.warning("Failed to fetch values for enum %s: %s", enum.name, str(e))
+
+        introspector.close()
+
+    except Exception as e:
+        logger.warning("Failed to populate enum values: %s", str(e))
+
+    return enhanced_spec
+
+
 def get_tools() -> List[Tool]:
     """Return all model generation tools."""
     return [
@@ -555,6 +628,19 @@ async def generate_model(
                     enhanced_summary["constraints"],
                     enhanced_summary["derived_properties"],
                 )
+
+                # Fetch actual values for enum candidates that have empty values
+                if enhanced_spec.enumerations:
+                    enhanced_spec = _populate_enum_values(
+                        enhanced_spec,
+                        db_type_enum,
+                        database,
+                        schema,
+                    )
+                    # Update summary with enums that have values
+                    enums_with_values = sum(1 for e in enhanced_spec.enumerations if e.values)
+                    logger.info("Populated values for %d/%d enum candidates",
+                               enums_with_values, len(enhanced_spec.enumerations))
 
             except Exception as e:
                 logger.warning("Enhanced analysis failed: %s. Continuing with basic generation.", str(e))
