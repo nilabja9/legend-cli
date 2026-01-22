@@ -281,6 +281,22 @@ class SDLCClient:
         )
         response.raise_for_status()
 
+    def delete_project(self, project_id: str) -> bool:
+        """Delete a project by ID.
+
+        Args:
+            project_id: The project ID to delete
+
+        Returns:
+            True if deletion was successful
+
+        Raises:
+            httpx.HTTPStatusError: If the deletion fails
+        """
+        response = self.client.delete(f"/projects/{project_id}")
+        response.raise_for_status()
+        return True
+
     # Utility methods
     def health_check(self) -> bool:
         """Check if SDLC server is healthy."""

@@ -4,11 +4,15 @@ import typer
 from typing import Optional
 from rich.console import Console
 from rich.table import Table
+from rich.prompt import Confirm
 from ..sdlc_client import SDLCClient
 from ..config import settings
 
 app = typer.Typer(help="Project management commands")
 console = Console()
+
+# Protected project that should never be deleted with --all
+PROTECTED_PROJECT_NAME = "Guided Tour"
 
 
 @app.command("list")
@@ -79,4 +83,89 @@ def create_project(
             console.print(f"  Name: {project.get('name')}")
         except Exception as e:
             console.print(f"[red]Error creating project: {e}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command("delete")
+def delete_project(
+    name: Optional[str] = typer.Argument(None, help="Project name to delete"),
+    all_projects: bool = typer.Option(False, "--all", "-a", help="Delete all projects except 'Guided Tour'"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Delete a project by name, or all projects except 'Guided Tour' with --all flag."""
+    with SDLCClient() as client:
+        try:
+            projects = client.list_projects()
+
+            if all_projects:
+                # Delete all projects except Guided Tour
+                projects_to_delete = [
+                    p for p in projects
+                    if p.get("name") != PROTECTED_PROJECT_NAME
+                ]
+
+                if not projects_to_delete:
+                    console.print(f"[yellow]No projects to delete (only '{PROTECTED_PROJECT_NAME}' exists).[/yellow]")
+                    return
+
+                # Show what will be deleted
+                console.print(f"[bold]Projects to delete:[/bold]")
+                for p in projects_to_delete:
+                    console.print(f"  - {p.get('name')} (ID: {p.get('projectId')})")
+                console.print(f"\n[cyan]'{PROTECTED_PROJECT_NAME}' will be preserved.[/cyan]")
+
+                if not force:
+                    if not Confirm.ask(f"\nDelete {len(projects_to_delete)} project(s)?"):
+                        console.print("[yellow]Aborted.[/yellow]")
+                        raise typer.Exit(0)
+
+                # Delete each project
+                deleted_count = 0
+                for p in projects_to_delete:
+                    try:
+                        client.delete_project(p.get("projectId"))
+                        console.print(f"[green]Deleted:[/green] {p.get('name')}")
+                        deleted_count += 1
+                    except Exception as e:
+                        console.print(f"[red]Failed to delete {p.get('name')}: {e}[/red]")
+
+                console.print(f"\n[green]Deleted {deleted_count} project(s).[/green]")
+
+            else:
+                # Delete by name
+                if not name:
+                    console.print("[red]Error: Project name is required (or use --all flag)[/red]")
+                    raise typer.Exit(1)
+
+                # Prevent deleting protected project
+                if name == PROTECTED_PROJECT_NAME:
+                    console.print(f"[red]Error: Cannot delete protected project '{PROTECTED_PROJECT_NAME}'[/red]")
+                    raise typer.Exit(1)
+
+                # Find project by name
+                matching = [p for p in projects if p.get("name") == name]
+
+                if not matching:
+                    console.print(f"[red]Error: Project '{name}' not found[/red]")
+                    raise typer.Exit(1)
+
+                if len(matching) > 1:
+                    console.print(f"[yellow]Multiple projects found with name '{name}':[/yellow]")
+                    for p in matching:
+                        console.print(f"  - ID: {p.get('projectId')}")
+                    console.print("[yellow]All matching projects will be deleted.[/yellow]")
+
+                if not force:
+                    if not Confirm.ask(f"Delete project '{name}' ({len(matching)} instance(s))?"):
+                        console.print("[yellow]Aborted.[/yellow]")
+                        raise typer.Exit(0)
+
+                for p in matching:
+                    client.delete_project(p.get("projectId"))
+                    console.print(f"[green]Deleted:[/green] {p.get('name')} (ID: {p.get('projectId')})")
+
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[red]Error deleting project: {e}[/red]")
             raise typer.Exit(1)
