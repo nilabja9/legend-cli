@@ -5,11 +5,13 @@ This module provides LLM-powered analysis of database schemas to detect:
 - Enumeration candidates
 - Constraint opportunities
 - Derived property patterns
+- Document-based relationships (ERD diagrams, SQL JOINs)
 
 The analysis combines multiple sources:
 - Database schema structure
 - Documentation (URLs, PDFs, JSON)
 - SQL query patterns
+- ERD images (via Claude Vision)
 """
 
 from legend_cli.analysis.models import (
@@ -36,6 +38,20 @@ from legend_cli.analysis.relationship_analyzer import (
     DiscoveredRelationship,
     discover_relationships,
 )
+from legend_cli.analysis.erd_analyzer import (
+    ERDAnalyzer,
+    ERDRelationship,
+)
+from legend_cli.analysis.document_relationship_analyzer import (
+    DocumentRelationshipAnalyzer,
+    DocumentRelationship,
+    extract_document_relationships,
+)
+from legend_cli.analysis.relationship_merger import (
+    RelationshipMerger,
+    MergeResult,
+    merge_relationships,
+)
 
 __all__ = [
     # Models
@@ -61,4 +77,13 @@ __all__ = [
     "RelationshipAnalyzer",
     "DiscoveredRelationship",
     "discover_relationships",
+    # Document-Based Relationship Analysis
+    "ERDAnalyzer",
+    "ERDRelationship",
+    "DocumentRelationshipAnalyzer",
+    "DocumentRelationship",
+    "extract_document_relationships",
+    "RelationshipMerger",
+    "MergeResult",
+    "merge_relationships",
 ]

@@ -2,8 +2,32 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Tuple
 from pathlib import Path
+
+
+@dataclass
+class ExtractedImage:
+    """Represents an image extracted from a document."""
+
+    page_number: int
+    image_data: bytes
+    image_format: str  # e.g., "png", "jpeg", "jpg"
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+    @property
+    def media_type(self) -> str:
+        """Get the MIME type for this image format."""
+        format_map = {
+            "png": "image/png",
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+            "bmp": "image/bmp",
+        }
+        return format_map.get(self.image_format.lower(), "image/png")
 
 
 @dataclass
@@ -14,10 +38,19 @@ class DocumentationSource:
     source_path: str  # Original URL or file path
     content: str  # Extracted text content
     metadata: dict = field(default_factory=dict)  # Additional metadata (title, sections, etc.)
+    images: List[ExtractedImage] = field(default_factory=list)  # Extracted images from document
 
     def __post_init__(self):
         if not self.content:
             self.content = ""
+
+    def has_images(self) -> bool:
+        """Check if this source contains any images."""
+        return len(self.images) > 0
+
+    def get_images_from_page(self, page_number: int) -> List[ExtractedImage]:
+        """Get all images from a specific page."""
+        return [img for img in self.images if img.page_number == page_number]
 
 
 class DocumentParser(ABC):

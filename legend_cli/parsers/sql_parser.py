@@ -9,6 +9,32 @@ from legend_cli.parsers.base import DocumentParser, DocumentationSource
 
 
 @dataclass
+class JoinRelationship:
+    """Represents a JOIN relationship extracted from SQL.
+
+    This captures the relationship between two tables as expressed
+    in a SQL JOIN clause, which can be used to infer foreign key
+    relationships for database introspection.
+    """
+
+    left_table: str
+    left_column: str
+    right_table: str
+    right_column: str
+    join_type: str  # INNER, LEFT, RIGHT, FULL
+    source_query: str = ""
+
+    def to_relationship_tuple(self) -> tuple:
+        """Return a tuple for deduplication purposes."""
+        # Normalize to always have the same order
+        tables = sorted([
+            (self.left_table, self.left_column),
+            (self.right_table, self.right_column)
+        ])
+        return (tables[0][0], tables[0][1], tables[1][0], tables[1][1])
+
+
+@dataclass
 class SqlQuery:
     """Represents a parsed SQL query."""
 
@@ -87,6 +113,14 @@ class SqlQuery:
                 tables.append(table)
 
         return tables
+
+    def extract_joins(self) -> List[JoinRelationship]:
+        """Extract JOIN relationships from this query.
+
+        Returns:
+            List of JoinRelationship objects representing table joins
+        """
+        return SqlJoinExtractor.extract_joins(self.query)
 
 
 @dataclass
@@ -345,3 +379,202 @@ def extract_select_queries(paths: List[str]) -> List[str]:
             print(f"Warning: Failed to parse {path}: {e}")
 
     return select_queries
+
+
+class SqlJoinExtractor:
+    """Extracts JOIN relationships from SQL queries.
+
+    This class parses SQL queries to extract JOIN conditions,
+    which represent relationships between tables. These relationships
+    can be used to infer foreign key constraints for databases
+    that don't have explicit FK metadata.
+
+    Example:
+        SELECT * FROM orders o
+        JOIN customers c ON o.customer_id = c.id
+
+        Extracts: orders.customer_id -> customers.id (INNER JOIN)
+    """
+
+    # Regex pattern for extracting JOIN clauses with ON conditions
+    # Supports: INNER JOIN, LEFT [OUTER] JOIN, RIGHT [OUTER] JOIN, FULL [OUTER] JOIN
+    JOIN_PATTERN = re.compile(
+        r"""
+        (?P<join_type>INNER\s+|LEFT\s+(?:OUTER\s+)?|RIGHT\s+(?:OUTER\s+)?|FULL\s+(?:OUTER\s+)?|CROSS\s+)?
+        JOIN\s+
+        (?P<table>[\w.]+)
+        (?:\s+(?:AS\s+)?(?P<alias>\w+))?
+        \s+ON\s+
+        (?P<condition>[^)]+?)
+        (?=\s+(?:INNER|LEFT|RIGHT|FULL|CROSS|JOIN|WHERE|GROUP|ORDER|HAVING|LIMIT|UNION|;|$))
+        """,
+        re.IGNORECASE | re.VERBOSE | re.DOTALL,
+    )
+
+    # Pattern for parsing equality conditions in ON clause
+    # Supports: t1.col1 = t2.col2 or col1 = col2
+    CONDITION_PATTERN = re.compile(
+        r"""
+        (?P<left>[\w.]+)
+        \s*=\s*
+        (?P<right>[\w.]+)
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    @classmethod
+    def extract_joins(cls, sql: str) -> List[JoinRelationship]:
+        """Extract JOIN relationships from a single SQL query.
+
+        Args:
+            sql: SQL query string
+
+        Returns:
+            List of JoinRelationship objects
+        """
+        relationships = []
+
+        # Build alias map from the query
+        alias_map = cls._build_alias_map(sql)
+
+        # Find all JOIN clauses
+        for match in cls.JOIN_PATTERN.finditer(sql):
+            join_type = (match.group("join_type") or "INNER").strip().upper()
+            join_type = join_type.replace("OUTER", "").strip()
+            if not join_type:
+                join_type = "INNER"
+
+            joined_table = match.group("table").split(".")[-1]  # Remove schema
+            alias = match.group("alias")
+            condition = match.group("condition")
+
+            # Register alias if present
+            if alias:
+                alias_map[alias.upper()] = joined_table
+
+            # Parse the ON condition for equality joins
+            for cond_match in cls.CONDITION_PATTERN.finditer(condition):
+                left = cond_match.group("left")
+                right = cond_match.group("right")
+
+                # Resolve table.column references
+                left_table, left_col = cls._resolve_column_ref(left, alias_map)
+                right_table, right_col = cls._resolve_column_ref(right, alias_map)
+
+                if left_table and right_table and left_col and right_col:
+                    relationships.append(
+                        JoinRelationship(
+                            left_table=left_table,
+                            left_column=left_col,
+                            right_table=right_table,
+                            right_column=right_col,
+                            join_type=join_type,
+                            source_query=sql[:200] + "..." if len(sql) > 200 else sql,
+                        )
+                    )
+
+        return relationships
+
+    @classmethod
+    def extract_from_document(cls, content: str) -> List[JoinRelationship]:
+        """Extract JOIN relationships from document content.
+
+        This method looks for SQL code blocks or inline SQL queries
+        in documentation text and extracts JOIN relationships from them.
+
+        Args:
+            content: Document content (may contain SQL queries)
+
+        Returns:
+            List of JoinRelationship objects (deduplicated)
+        """
+        relationships = []
+        seen = set()
+
+        # Find SQL code blocks (```sql ... ```)
+        sql_block_pattern = r"```(?:sql|SQL)?\s*\n(.*?)```"
+        for match in re.finditer(sql_block_pattern, content, re.DOTALL):
+            block = match.group(1)
+            for rel in cls.extract_joins(block):
+                key = rel.to_relationship_tuple()
+                if key not in seen:
+                    seen.add(key)
+                    relationships.append(rel)
+
+        # Also look for inline SELECT statements
+        select_pattern = r"(SELECT\s+.+?(?:;|$))"
+        for match in re.finditer(select_pattern, content, re.IGNORECASE | re.DOTALL):
+            query = match.group(1)
+            # Only process if it contains JOIN
+            if re.search(r"\bJOIN\b", query, re.IGNORECASE):
+                for rel in cls.extract_joins(query):
+                    key = rel.to_relationship_tuple()
+                    if key not in seen:
+                        seen.add(key)
+                        relationships.append(rel)
+
+        return relationships
+
+    @classmethod
+    def _build_alias_map(cls, sql: str) -> dict:
+        """Build a mapping of table aliases to table names.
+
+        Args:
+            sql: SQL query string
+
+        Returns:
+            Dictionary mapping alias (uppercase) to table name
+        """
+        alias_map = {}
+
+        # Pattern for FROM clause with alias: FROM table [AS] alias
+        from_pattern = r"FROM\s+([\w.]+)(?:\s+(?:AS\s+)?(\w+))?"
+        for match in re.finditer(from_pattern, sql, re.IGNORECASE):
+            table = match.group(1).split(".")[-1]
+            alias = match.group(2)
+            if alias:
+                alias_map[alias.upper()] = table
+            # Also map table name to itself
+            alias_map[table.upper()] = table
+
+        # Pattern for JOIN clause with alias
+        join_alias_pattern = r"JOIN\s+([\w.]+)(?:\s+(?:AS\s+)?(\w+))?"
+        for match in re.finditer(join_alias_pattern, sql, re.IGNORECASE):
+            table = match.group(1).split(".")[-1]
+            alias = match.group(2)
+            if alias:
+                alias_map[alias.upper()] = table
+            alias_map[table.upper()] = table
+
+        return alias_map
+
+    @classmethod
+    def _resolve_column_ref(
+        cls, ref: str, alias_map: dict
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Resolve a column reference to (table_name, column_name).
+
+        Args:
+            ref: Column reference (e.g., "t.col" or "col")
+            alias_map: Mapping of aliases to table names
+
+        Returns:
+            Tuple of (table_name, column_name), or (None, None) if unresolvable
+        """
+        parts = ref.split(".")
+        if len(parts) == 2:
+            # Has table qualifier
+            table_or_alias = parts[0].upper()
+            column = parts[1]
+            table = alias_map.get(table_or_alias, parts[0])
+            return (table, column)
+        elif len(parts) == 1:
+            # No qualifier - can't determine table
+            return (None, parts[0])
+        elif len(parts) == 3:
+            # Schema.table.column
+            table = parts[1]
+            column = parts[2]
+            return (table, column)
+        else:
+            return (None, None)

@@ -318,6 +318,52 @@ def generate_from_snowflake(
             console.print("[yellow]Continuing without documentation...[/yellow]")
             docs = None
 
+    # Step 2b: Analyze document relationships (ERD images, SQL JOINs)
+    # This runs even without --enhanced if doc_source is provided
+    parsed_doc_sources = None
+    if doc_source and should_generate_docs:
+        try:
+            # Re-use already parsed doc sources if available from doc generation
+            doc_gen = DocGenerator()
+            parsed_doc_sources = asyncio.run(doc_gen.parse_sources(doc_source))
+
+            # Check if any documents have images (potential ERD diagrams)
+            docs_with_images = [d for d in parsed_doc_sources if d.has_images()]
+            if docs_with_images:
+                console.print(f"\n[blue]Analyzing {len(docs_with_images)} document(s) for ERD diagrams...[/blue]")
+
+            # Import relationship analyzer
+            from ..analysis import (
+                DocumentRelationshipAnalyzer,
+                RelationshipMerger,
+            )
+
+            # Analyze documents for relationships
+            doc_rel_analyzer = DocumentRelationshipAnalyzer()
+            known_tables = {t.name for t in db.get_all_tables()}
+            doc_relationships = doc_rel_analyzer.analyze_documents_sync(
+                doc_sources=parsed_doc_sources,
+                known_tables=known_tables,
+            )
+
+            if doc_relationships:
+                console.print(f"  [green]Found {len(doc_relationships)} relationships from documents[/green]")
+                for rel in doc_relationships[:5]:
+                    console.print(f"    - {rel.source_table}.{rel.source_column} -> {rel.target_table}.{rel.target_column} ({rel.source})")
+                if len(doc_relationships) > 5:
+                    console.print(f"    ... and {len(doc_relationships) - 5} more")
+
+                # Merge with existing relationships
+                merger = RelationshipMerger()
+                db.relationships = merger.merge_into_database(
+                    document_relationships=doc_relationships,
+                    existing_relationships=db.relationships,
+                )
+                console.print(f"  [green]Total relationships after merge: {len(db.relationships)}[/green]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Document relationship analysis failed: {e}[/yellow]")
+
     # Step 3: Enhanced analysis (if requested)
     enhanced_spec = None
     if enhanced:
@@ -344,6 +390,7 @@ def generate_from_snowflake(
             detect_enums=enums,
             detect_constraints=constraints,
             detect_derived=derived,
+            analyze_document_relationships=False,  # Already done above
             use_llm=True,
             confidence_threshold=confidence,
         )
@@ -355,6 +402,7 @@ def generate_from_snowflake(
                 database=db,
                 documentation=doc_content,
                 sql_queries=sql_queries,
+                doc_sources=parsed_doc_sources,  # Pass parsed doc sources
             )
             enhanced_spec = analyzer.analyze(context)
 
@@ -776,6 +824,52 @@ def generate_from_duckdb(
             console.print("[yellow]Continuing without documentation...[/yellow]")
             docs = None
 
+    # Step 2b: Analyze document relationships (ERD images, SQL JOINs)
+    # This runs even without --enhanced if doc_source is provided
+    parsed_doc_sources = None
+    if doc_source and should_generate_docs:
+        try:
+            # Re-use already parsed doc sources if available from doc generation
+            doc_gen = DocGenerator()
+            parsed_doc_sources = asyncio.run(doc_gen.parse_sources(doc_source))
+
+            # Check if any documents have images (potential ERD diagrams)
+            docs_with_images = [d for d in parsed_doc_sources if d.has_images()]
+            if docs_with_images:
+                console.print(f"\n[blue]Analyzing {len(docs_with_images)} document(s) for ERD diagrams...[/blue]")
+
+            # Import relationship analyzer
+            from ..analysis import (
+                DocumentRelationshipAnalyzer,
+                RelationshipMerger,
+            )
+
+            # Analyze documents for relationships
+            doc_rel_analyzer = DocumentRelationshipAnalyzer()
+            known_tables = {t.name for t in db.get_all_tables()}
+            doc_relationships = doc_rel_analyzer.analyze_documents_sync(
+                doc_sources=parsed_doc_sources,
+                known_tables=known_tables,
+            )
+
+            if doc_relationships:
+                console.print(f"  [green]Found {len(doc_relationships)} relationships from documents[/green]")
+                for rel in doc_relationships[:5]:
+                    console.print(f"    - {rel.source_table}.{rel.source_column} -> {rel.target_table}.{rel.target_column} ({rel.source})")
+                if len(doc_relationships) > 5:
+                    console.print(f"    ... and {len(doc_relationships) - 5} more")
+
+                # Merge with existing relationships
+                merger = RelationshipMerger()
+                db.relationships = merger.merge_into_database(
+                    document_relationships=doc_relationships,
+                    existing_relationships=db.relationships,
+                )
+                console.print(f"  [green]Total relationships after merge: {len(db.relationships)}[/green]")
+
+        except Exception as e:
+            console.print(f"[yellow]Warning: Document relationship analysis failed: {e}[/yellow]")
+
     # Step 3: Enhanced analysis (if requested)
     enhanced_spec = None
     if enhanced:
@@ -802,6 +896,7 @@ def generate_from_duckdb(
             detect_enums=enums,
             detect_constraints=constraints,
             detect_derived=derived,
+            analyze_document_relationships=False,  # Already done above
             use_llm=True,
             confidence_threshold=confidence,
         )
@@ -813,6 +908,7 @@ def generate_from_duckdb(
                 database=db,
                 documentation=doc_content,
                 sql_queries=sql_queries,
+                doc_sources=parsed_doc_sources,  # Pass parsed doc sources
             )
             enhanced_spec = analyzer.analyze(context)
 

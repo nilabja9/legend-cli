@@ -1,15 +1,21 @@
 """Schema analyzer orchestrator for enhanced model generation.
 
 Coordinates all analysis components (hierarchy detector, enum detector,
-constraint analyzer, derived analyzer) to produce a unified EnhancedModelSpec.
+constraint analyzer, derived analyzer, document relationship analyzer)
+to produce a unified EnhancedModelSpec.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from legend_cli.analysis.constraint_analyzer import ConstraintAnalyzer, DatabaseConstraint
 from legend_cli.analysis.derived_analyzer import DerivedAnalyzer
+from legend_cli.analysis.document_relationship_analyzer import (
+    DocumentRelationshipAnalyzer,
+    DocumentRelationship,
+)
 from legend_cli.analysis.enum_detector import EnumDetector
 from legend_cli.analysis.hierarchy_detector import HierarchyDetector
 from legend_cli.analysis.models import (
@@ -20,8 +26,11 @@ from legend_cli.analysis.models import (
     InheritanceOpportunity,
     TableAnalysis,
 )
+from legend_cli.analysis.relationship_merger import RelationshipMerger
 from legend_cli.claude_client import ClaudeClient
-from legend_cli.database.models import Database
+from legend_cli.database.models import Database, Relationship
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +42,9 @@ class AnalysisOptions:
     detect_enums: bool = True
     detect_constraints: bool = False
     detect_derived: bool = False
+
+    # Document-based relationship analysis
+    analyze_document_relationships: bool = True  # Analyze ERD images and SQL JOINs from documents
 
     # Use LLM for enhanced detection
     use_llm: bool = True
@@ -57,13 +69,16 @@ class AnalysisContext:
     db_constraints: Optional[List[DatabaseConstraint]] = None
     sample_values: Optional[Dict[str, List[Any]]] = None
     value_fetcher: Optional[Callable[[str, str], List[Any]]] = None
+    # Document sources for relationship analysis (PDFs, SQL files, etc.)
+    doc_sources: Optional[List[Any]] = None  # List[DocumentationSource]
 
 
 class SchemaAnalyzer:
     """Orchestrates schema analysis for enhanced model generation.
 
     Coordinates multiple analyzers to produce a unified EnhancedModelSpec
-    that can be used by EnhancedPureCodeGenerator.
+    that can be used by EnhancedPureCodeGenerator. Also handles document-based
+    relationship discovery from ERD images and SQL JOINs.
     """
 
     def __init__(
@@ -86,6 +101,10 @@ class SchemaAnalyzer:
         self.constraint_analyzer = ConstraintAnalyzer(claude_client=self.claude)
         self.derived_analyzer = DerivedAnalyzer(claude_client=self.claude)
 
+        # Document relationship analyzer (for ERD and SQL JOIN extraction)
+        self.doc_relationship_analyzer = DocumentRelationshipAnalyzer()
+        self.relationship_merger = RelationshipMerger()
+
     def analyze(
         self,
         context: AnalysisContext,
@@ -102,6 +121,10 @@ class SchemaAnalyzer:
         enumerations = []
         constraints = []
         derived_properties = []
+
+        # Analyze document relationships if doc sources are provided
+        if self.options.analyze_document_relationships and context.doc_sources:
+            self._analyze_document_relationships(context)
 
         # Run analyses based on options
         if self.options.detect_hierarchies:
@@ -208,6 +231,60 @@ class SchemaAnalyzer:
         )
 
         return spec.filter_by_confidence(self.options.confidence_threshold)
+
+    def _analyze_document_relationships(
+        self,
+        context: AnalysisContext,
+    ) -> None:
+        """Analyze document sources for relationships and merge with existing.
+
+        This method extracts relationships from:
+        - ERD images in PDF documents (via Claude Vision)
+        - SQL JOIN patterns in documents
+
+        The extracted relationships are merged into the database's relationships
+        list, with document-derived relationships taking priority over existing
+        pattern-based relationships.
+
+        Args:
+            context: Analysis context with database and doc_sources
+        """
+        if not context.doc_sources:
+            return
+
+        try:
+            # Get known table names
+            known_tables = {t.name for t in context.database.get_all_tables()}
+
+            # Analyze documents for relationships
+            logger.info("Analyzing %d document sources for relationships...", len(context.doc_sources))
+            doc_relationships = self.doc_relationship_analyzer.analyze_documents_sync(
+                doc_sources=context.doc_sources,
+                known_tables=known_tables,
+            )
+
+            if doc_relationships:
+                logger.info("Found %d relationships in documents", len(doc_relationships))
+
+                # Merge with existing relationships (document takes priority)
+                merged = self.relationship_merger.merge_into_database(
+                    document_relationships=doc_relationships,
+                    existing_relationships=context.database.relationships,
+                )
+
+                # Update database relationships
+                context.database.relationships = merged
+
+                logger.info(
+                    "Merged relationships: %d total (was %d)",
+                    len(merged),
+                    len(context.database.relationships),
+                )
+            else:
+                logger.info("No relationships found in documents")
+
+        except Exception as e:
+            logger.warning("Document relationship analysis failed: %s", e)
 
     def _detect_hierarchies(
         self,

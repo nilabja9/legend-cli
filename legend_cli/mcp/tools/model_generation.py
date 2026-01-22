@@ -4,6 +4,7 @@ Provides tools for generating Pure code from database schemas,
 including stores, classes, connections, mappings, and runtimes.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -458,7 +459,7 @@ def get_tools() -> List[Tool]:
         ),
         Tool(
             name="generate_associations",
-            description="Generate Pure Association definitions from detected relationships. Can use LLM-based discovery when no foreign key constraints exist.",
+            description="Generate Pure Association definitions from detected relationships. Can use document sources (ERD images, SQL JOINs) or LLM-based discovery when no foreign key constraints exist.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -475,6 +476,10 @@ def get_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Package prefix (default: 'model')",
                         "default": "model"
+                    },
+                    "doc_reference": {
+                        "type": "string",
+                        "description": "Optional URL or PDF path containing ERD diagrams or SQL queries. Relationships extracted from documents take priority over LLM inference."
                     },
                     "use_llm": {
                         "type": "boolean",
@@ -646,6 +651,47 @@ async def generate_model(
                 port=duckdb_port,
             )
 
+        # Analyze document relationships if doc_reference is provided
+        parsed_doc_sources = None
+        doc_relationship_count = 0
+        if doc_reference:
+            try:
+                from legend_cli.doc_generator import DocGenerator
+                from legend_cli.analysis import (
+                    DocumentRelationshipAnalyzer,
+                    RelationshipMerger,
+                )
+
+                logger.info("Analyzing document source for relationships: %s", doc_reference)
+
+                # Parse the document source
+                doc_gen = DocGenerator()
+                parsed_doc_sources = asyncio.get_event_loop().run_until_complete(
+                    doc_gen.parse_sources([doc_reference])
+                )
+
+                # Analyze for relationships
+                doc_rel_analyzer = DocumentRelationshipAnalyzer()
+                known_tables = {t.name for t in schema.get_all_tables()}
+                doc_relationships = doc_rel_analyzer.analyze_documents_sync(
+                    doc_sources=parsed_doc_sources,
+                    known_tables=known_tables,
+                )
+
+                if doc_relationships:
+                    doc_relationship_count = len(doc_relationships)
+                    logger.info("Found %d relationships in document", doc_relationship_count)
+
+                    # Merge with existing relationships (document takes priority)
+                    merger = RelationshipMerger()
+                    schema.relationships = merger.merge_into_database(
+                        document_relationships=doc_relationships,
+                        existing_relationships=schema.relationships,
+                    )
+
+            except Exception as e:
+                logger.warning("Document relationship analysis failed: %s", str(e))
+
         # Run enhanced analysis if requested
         enhanced_spec = None
         enhanced_summary = {}
@@ -661,6 +707,7 @@ async def generate_model(
                     detect_enums=detect_enums,
                     detect_constraints=detect_constraints,
                     detect_derived=detect_derived,
+                    analyze_document_relationships=False,  # Already done above
                     use_llm=True,
                     confidence_threshold=confidence_threshold,
                 )
@@ -671,6 +718,7 @@ async def generate_model(
                     database=schema,
                     documentation=None,
                     sql_queries=None,
+                    doc_sources=parsed_doc_sources,
                 )
                 enhanced_spec = analyzer.analyze(context)
 
@@ -754,6 +802,12 @@ async def generate_model(
 
         if enhanced_summary:
             response["enhanced_analysis"] = enhanced_summary
+
+        if doc_relationship_count > 0:
+            response["document_relationships"] = {
+                "count": doc_relationship_count,
+                "source": doc_reference,
+            }
 
         return json.dumps(response)
 
@@ -1023,6 +1077,7 @@ async def generate_associations(
     db_type: str,
     database: Optional[str] = None,
     package_prefix: str = "model",
+    doc_reference: Optional[str] = None,
     use_llm: bool = True,
     confidence_threshold: float = 0.6,
     skip_database_prompt: bool = False,
@@ -1046,6 +1101,48 @@ async def generate_associations(
         # Check if relationships exist from introspection
         has_relationships = bool(schema.relationships)
         discovery_method = "introspection"
+        doc_relationship_count = 0
+
+        # First try document-based relationship discovery if doc_reference provided
+        if doc_reference:
+            try:
+                from legend_cli.doc_generator import DocGenerator
+                from legend_cli.analysis import (
+                    DocumentRelationshipAnalyzer,
+                    RelationshipMerger,
+                )
+
+                logger.info("Analyzing document source for relationships: %s", doc_reference)
+
+                # Parse the document source
+                doc_gen = DocGenerator()
+                parsed_doc_sources = asyncio.get_event_loop().run_until_complete(
+                    doc_gen.parse_sources([doc_reference])
+                )
+
+                # Analyze for relationships
+                doc_rel_analyzer = DocumentRelationshipAnalyzer()
+                known_tables = {t.name for t in schema.get_all_tables()}
+                doc_relationships = doc_rel_analyzer.analyze_documents_sync(
+                    doc_sources=parsed_doc_sources,
+                    known_tables=known_tables,
+                )
+
+                if doc_relationships:
+                    doc_relationship_count = len(doc_relationships)
+                    logger.info("Found %d relationships in document", doc_relationship_count)
+
+                    # Merge with existing relationships (document takes priority)
+                    merger = RelationshipMerger()
+                    schema.relationships = merger.merge_into_database(
+                        document_relationships=doc_relationships,
+                        existing_relationships=schema.relationships,
+                    )
+                    has_relationships = True
+                    discovery_method = "document"
+
+            except Exception as doc_err:
+                logger.warning("Document relationship analysis failed: %s", doc_err)
 
         # If no relationships and LLM is enabled, try LLM discovery
         if not has_relationships and use_llm:
