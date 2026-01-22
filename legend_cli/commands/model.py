@@ -790,6 +790,15 @@ def generate_from_duckdb(
     project_id: Optional[str] = typer.Option(None, "--project-id", "-p", help="Existing project ID to use"),
     workspace_id: str = typer.Option("dev-workspace", "--workspace", "-w", help="Workspace ID"),
     connection_string: Optional[str] = typer.Option(None, "--connection-string", help="DuckDB connection string (alternative to path)"),
+    # Postgres wire protocol options (for buenavista)
+    postgres_port: Optional[int] = typer.Option(
+        None, "--postgres-port", "-pp",
+        help="Connect via Postgres wire protocol on this port (use when DuckDB is served by buenavista)"
+    ),
+    postgres_host: str = typer.Option(
+        "localhost", "--postgres-host", "-ph",
+        help="Host for Postgres wire protocol connection"
+    ),
     # Documentation generation options
     doc_source: Annotated[Optional[List[str]], typer.Option(
         "--doc-source", "-d",
@@ -830,6 +839,7 @@ def generate_from_duckdb(
         legend-cli model from-duckdb ./analytics.duckdb --schema main --name analytics_model
         legend-cli model from-duckdb :memory: --name test_db --dry-run
         legend-cli model from-duckdb ./db.duckdb --enhanced --analyze-only
+        legend-cli model from-duckdb ./db.duckdb --postgres-port 5433 --enhanced
     """
     # Start CLI run logging
     with log_cli_run(
@@ -852,6 +862,8 @@ def generate_from_duckdb(
             "constraints": constraints,
             "derived": derived,
             "confidence": confidence,
+            "postgres_port": postgres_port,
+            "postgres_host": postgres_host,
         },
     ) as run_ctx:
         _execute_duckdb_model_generation(
@@ -863,6 +875,8 @@ def generate_from_duckdb(
             project_id=project_id,
             workspace_id=workspace_id,
             connection_string=connection_string,
+            postgres_port=postgres_port,
+            postgres_host=postgres_host,
             doc_source=doc_source,
             auto_docs=auto_docs,
             dry_run=dry_run,
@@ -887,6 +901,8 @@ def _execute_duckdb_model_generation(
     project_id: Optional[str],
     workspace_id: str,
     connection_string: Optional[str],
+    postgres_port: Optional[int],
+    postgres_host: str,
     doc_source: Optional[List[str]],
     auto_docs: bool,
     dry_run: bool,
@@ -906,9 +922,14 @@ def _execute_duckdb_model_generation(
     if connection_string and not database_path:
         actual_path = None
 
+    # Build connection info display
+    connection_info = f"Database: {database_path}"
+    if postgres_port:
+        connection_info += f"\nConnection: via Postgres wire protocol ({postgres_host}:{postgres_port})"
+
     console.print(Panel(
         f"[bold blue]Generating Legend Model from DuckDB[/bold blue]\n"
-        f"Database: {database_path}\n"
+        f"{connection_info}\n"
         f"Schema: {schema or 'All schemas'}",
         title="Legend Model Generator"
     ))
@@ -919,13 +940,16 @@ def _execute_duckdb_model_generation(
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Connecting to DuckDB...", total=None)
+        connect_msg = "Connecting to DuckDB via Postgres protocol..." if postgres_port else "Connecting to DuckDB..."
+        task = progress.add_task(connect_msg, total=None)
 
         try:
             introspector = DuckDBIntrospector(
                 database_path=actual_path,
                 connection_string=connection_string,
                 read_only=True,
+                postgres_host=postgres_host if postgres_port else None,
+                postgres_port=postgres_port,
             )
 
             progress.update(task, description="Introspecting database schema...")

@@ -31,12 +31,16 @@ snowflake = [
 duckdb = [
     "duckdb>=0.9.0",
 ]
+postgres = [
+    "psycopg2-binary>=2.9.0",
+]
 mcp = [
     "mcp>=1.0.0",
 ]
 all = [
     "snowflake-connector-python>=3.0.0",
     "duckdb>=0.9.0",
+    "psycopg2-binary>=2.9.0",
     "mcp>=1.0.0",
 ]
 
