@@ -84,6 +84,20 @@ class Settings(BaseSettings):
         description="Maximum size of result/parameter strings to store in logs"
     )
 
+    # CLI run logging configuration
+    cli_logging_enabled: bool = Field(
+        default=True,
+        description="Enable database logging for CLI command runs"
+    )
+    cli_logging_db_path: Optional[str] = Field(
+        default=None,
+        description="Path to CLI runs database file (default: ~/.legend-cli/cli_runs.db)"
+    )
+    cli_logging_retention_days: int = Field(
+        default=30,
+        description="Number of days to retain CLI run log entries"
+    )
+
     class Config:
         env_file = _find_env_file()
         env_file_encoding = "utf-8"

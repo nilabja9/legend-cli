@@ -24,6 +24,7 @@ from ..analysis import (
     analyze_schema,
 )
 from ..parsers.sql_parser import parse_sql_files
+from ..logging import log_cli_run
 
 app = typer.Typer(help="Generate complete Legend models from database schemas")
 console = Console()
@@ -205,6 +206,98 @@ def generate_from_snowflake(
         legend-cli model from-snowflake DB --enhanced --analyze-only
         legend-cli model from-snowflake DB --enhanced --sql-source ./queries/ --confidence 0.8
     """
+    # Start CLI run logging
+    with log_cli_run(
+        command="model",
+        subcommand="from-snowflake",
+        database_type="snowflake",
+        database_path=database,
+        schema_filter=schema,
+        doc_sources=list(doc_source) if doc_source else None,
+        arguments={
+            "project_name": project_name,
+            "project_id": project_id,
+            "workspace_id": workspace_id,
+            "account": account,
+            "warehouse": warehouse,
+            "role": role,
+            "enhanced": enhanced,
+            "dry_run": dry_run,
+            "auto_docs": auto_docs,
+            "enums": enums,
+            "hierarchies": hierarchies,
+            "constraints": constraints,
+            "derived": derived,
+            "confidence": confidence,
+        },
+    ) as run_ctx:
+        _execute_snowflake_model_generation(
+            run_ctx=run_ctx,
+            database=database,
+            schema=schema,
+            project_name=project_name,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            account=account,
+            user=user,
+            password=password,
+            warehouse=warehouse,
+            role=role,
+            region=region,
+            auth_type=auth_type,
+            legend_user=legend_user,
+            private_key_vault_ref=private_key_vault_ref,
+            passphrase_vault_ref=passphrase_vault_ref,
+            password_vault_ref=password_vault_ref,
+            aws_secret=aws_secret,
+            doc_source=doc_source,
+            auto_docs=auto_docs,
+            dry_run=dry_run,
+            output_dir=output_dir,
+            enhanced=enhanced,
+            sql_source=sql_source,
+            analyze_only=analyze_only,
+            confidence=confidence,
+            hierarchies=hierarchies,
+            enums=enums,
+            constraints=constraints,
+            derived=derived,
+        )
+
+
+def _execute_snowflake_model_generation(
+    run_ctx,
+    database: str,
+    schema: Optional[str],
+    project_name: Optional[str],
+    project_id: Optional[str],
+    workspace_id: str,
+    account: Optional[str],
+    user: Optional[str],
+    password: Optional[str],
+    warehouse: Optional[str],
+    role: str,
+    region: Optional[str],
+    auth_type: str,
+    legend_user: Optional[str],
+    private_key_vault_ref: str,
+    passphrase_vault_ref: str,
+    password_vault_ref: str,
+    aws_secret: Optional[str],
+    doc_source: Optional[List[str]],
+    auto_docs: bool,
+    dry_run: bool,
+    output_dir: Optional[str],
+    enhanced: bool,
+    sql_source: Optional[List[str]],
+    analyze_only: bool,
+    confidence: float,
+    hierarchies: bool,
+    enums: bool,
+    constraints: bool,
+    derived: bool,
+):
+    """Execute the actual Snowflake model generation (separated for logging)."""
     console.print(Panel(
         f"[bold blue]Generating Legend Model from Snowflake[/bold blue]\n"
         f"Database: {database}\n"
@@ -253,6 +346,13 @@ def generate_from_snowflake(
         raise typer.Exit(1)
 
     console.print(f"\n[bold]Total: {total_tables} tables across {len(db.schemas)} schema(s)[/bold]")
+
+    # Update run context with introspection results
+    total_columns = sum(len(t.columns) for s in db.schemas for t in s.tables)
+    run_ctx.schemas_count = len(db.schemas)
+    run_ctx.tables_count = total_tables
+    run_ctx.columns_count = total_columns
+    run_ctx.pattern_relationships = len(db.relationships)
 
     # Display detected relationships
     if db.relationships:
@@ -361,12 +461,17 @@ def generate_from_snowflake(
                 )
                 console.print(f"  [green]Total relationships after merge: {len(db.relationships)}[/green]")
 
+                # Update run context with document relationship results
+                run_ctx.document_relationships = len(doc_relationships)
+                run_ctx.total_relationships = len(db.relationships)
+
         except Exception as e:
             console.print(f"[yellow]Warning: Document relationship analysis failed: {e}[/yellow]")
 
     # Step 3: Enhanced analysis (if requested)
     enhanced_spec = None
     if enhanced:
+        run_ctx.enhanced_mode = True
         console.print("\n[blue]Running enhanced schema analysis...[/blue]")
 
         # Parse SQL sources if provided
@@ -405,6 +510,10 @@ def generate_from_snowflake(
                 doc_sources=parsed_doc_sources,  # Pass parsed doc sources
             )
             enhanced_spec = analyzer.analyze(context)
+
+            # Update run context with enhanced analysis results
+            run_ctx.enums_detected = len(enhanced_spec.enumerations)
+            run_ctx.hierarchies_detected = len(enhanced_spec.hierarchies)
 
             # Display analysis results
             console.print(f"\n[green]Enhanced Analysis Results:[/green]")
@@ -486,6 +595,14 @@ def generate_from_snowflake(
             docs=docs,
         )
 
+    # Update run context with generation results
+    run_ctx.artifacts_generated = list(artifacts.keys())
+    # Count classes from the classes artifact (approximate by counting 'Class ' occurrences)
+    if 'classes' in artifacts:
+        run_ctx.classes_generated = artifacts['classes'].count('Class ')
+    if 'associations' in artifacts:
+        run_ctx.associations_generated = artifacts['associations'].count('Association ')
+
     # Display generated artifacts
     artifact_table = Table(title="Generated Artifacts")
     artifact_table.add_column("Artifact", style="cyan")
@@ -520,6 +637,7 @@ def generate_from_snowflake(
         console.print("\n[yellow]Dry run - not pushing to SDLC[/yellow]")
         console.print("\n[bold]Generated Store:[/bold]")
         console.print(artifacts['store'][:1000] + "..." if len(artifacts['store']) > 1000 else artifacts['store'])
+        run_ctx.push_status = "skipped"
         return
 
     # Step 3: Create or use existing project
@@ -558,6 +676,12 @@ def generate_from_snowflake(
         commit_message=f"Added complete Legend model for {database}",
         db_name=database,
     )
+
+    # Update run context with SDLC results
+    run_ctx.project_id = int(actual_project_id) if actual_project_id.isdigit() else None
+    run_ctx.project_name = project_name or f"{database.lower().replace('_', '-')}-model"
+    run_ctx.workspace_id = workspace_id
+    run_ctx.push_status = "success" if push_success else "error"
 
     # Summary
     if push_success:
@@ -707,6 +831,76 @@ def generate_from_duckdb(
         legend-cli model from-duckdb :memory: --name test_db --dry-run
         legend-cli model from-duckdb ./db.duckdb --enhanced --analyze-only
     """
+    # Start CLI run logging
+    with log_cli_run(
+        command="model",
+        subcommand="from-duckdb",
+        database_type="duckdb",
+        database_path=database_path,
+        schema_filter=schema,
+        doc_sources=list(doc_source) if doc_source else None,
+        arguments={
+            "database_name": database_name,
+            "project_name": project_name,
+            "project_id": project_id,
+            "workspace_id": workspace_id,
+            "enhanced": enhanced,
+            "dry_run": dry_run,
+            "auto_docs": auto_docs,
+            "enums": enums,
+            "hierarchies": hierarchies,
+            "constraints": constraints,
+            "derived": derived,
+            "confidence": confidence,
+        },
+    ) as run_ctx:
+        _execute_duckdb_model_generation(
+            run_ctx=run_ctx,
+            database_path=database_path,
+            database_name=database_name,
+            schema=schema,
+            project_name=project_name,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            connection_string=connection_string,
+            doc_source=doc_source,
+            auto_docs=auto_docs,
+            dry_run=dry_run,
+            output_dir=output_dir,
+            enhanced=enhanced,
+            sql_source=sql_source,
+            analyze_only=analyze_only,
+            confidence=confidence,
+            hierarchies=hierarchies,
+            enums=enums,
+            constraints=constraints,
+            derived=derived,
+        )
+
+
+def _execute_duckdb_model_generation(
+    run_ctx,
+    database_path: str,
+    database_name: Optional[str],
+    schema: Optional[str],
+    project_name: Optional[str],
+    project_id: Optional[str],
+    workspace_id: str,
+    connection_string: Optional[str],
+    doc_source: Optional[List[str]],
+    auto_docs: bool,
+    dry_run: bool,
+    output_dir: Optional[str],
+    enhanced: bool,
+    sql_source: Optional[List[str]],
+    analyze_only: bool,
+    confidence: float,
+    hierarchies: bool,
+    enums: bool,
+    constraints: bool,
+    derived: bool,
+):
+    """Execute the actual DuckDB model generation (separated for logging)."""
     # Determine the actual path and database name
     actual_path = database_path
     if connection_string and not database_path:
@@ -759,6 +953,13 @@ def generate_from_duckdb(
         raise typer.Exit(1)
 
     console.print(f"\n[bold]Total: {total_tables} tables across {len(db.schemas)} schema(s)[/bold]")
+
+    # Update run context with introspection results
+    total_columns = sum(len(t.columns) for s in db.schemas for t in s.tables)
+    run_ctx.schemas_count = len(db.schemas)
+    run_ctx.tables_count = total_tables
+    run_ctx.columns_count = total_columns
+    run_ctx.pattern_relationships = len(db.relationships)
 
     # Display detected relationships
     if db.relationships:
@@ -867,12 +1068,17 @@ def generate_from_duckdb(
                 )
                 console.print(f"  [green]Total relationships after merge: {len(db.relationships)}[/green]")
 
+                # Update run context with document relationship results
+                run_ctx.document_relationships = len(doc_relationships)
+                run_ctx.total_relationships = len(db.relationships)
+
         except Exception as e:
             console.print(f"[yellow]Warning: Document relationship analysis failed: {e}[/yellow]")
 
     # Step 3: Enhanced analysis (if requested)
     enhanced_spec = None
     if enhanced:
+        run_ctx.enhanced_mode = True
         console.print("\n[blue]Running enhanced schema analysis...[/blue]")
 
         # Parse SQL sources if provided
@@ -911,6 +1117,10 @@ def generate_from_duckdb(
                 doc_sources=parsed_doc_sources,  # Pass parsed doc sources
             )
             enhanced_spec = analyzer.analyze(context)
+
+            # Update run context with enhanced analysis results
+            run_ctx.enums_detected = len(enhanced_spec.enumerations)
+            run_ctx.hierarchies_detected = len(enhanced_spec.hierarchies)
 
             # Display analysis results
             console.print(f"\n[green]Enhanced Analysis Results:[/green]")
@@ -966,6 +1176,14 @@ def generate_from_duckdb(
             docs=docs,
         )
 
+    # Update run context with generation results
+    run_ctx.artifacts_generated = list(artifacts.keys())
+    # Count classes from the classes artifact (approximate by counting 'Class ' occurrences)
+    if 'classes' in artifacts:
+        run_ctx.classes_generated = artifacts['classes'].count('Class ')
+    if 'associations' in artifacts:
+        run_ctx.associations_generated = artifacts['associations'].count('Association ')
+
     # Display generated artifacts
     artifact_table = Table(title="Generated Artifacts")
     artifact_table.add_column("Artifact", style="cyan")
@@ -1000,6 +1218,7 @@ def generate_from_duckdb(
         console.print("\n[yellow]Dry run - not pushing to SDLC[/yellow]")
         console.print("\n[bold]Generated Store:[/bold]")
         console.print(artifacts['store'][:1000] + "..." if len(artifacts['store']) > 1000 else artifacts['store'])
+        run_ctx.push_status = "skipped"
         return
 
     # Step 4: Create or use existing project
@@ -1038,6 +1257,12 @@ def generate_from_duckdb(
         commit_message=f"Added complete Legend model for {db.name}",
         db_name=db.name,
     )
+
+    # Update run context with SDLC results
+    run_ctx.project_id = int(actual_project_id) if actual_project_id.isdigit() else None
+    run_ctx.project_name = project_name or f"{db.name.lower().replace('_', '-')}-model"
+    run_ctx.workspace_id = workspace_id
+    run_ctx.push_status = "success" if push_success else "error"
 
     # Summary
     if push_success:
