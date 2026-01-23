@@ -30,6 +30,9 @@ pip install -e ".[snowflake]"
 # Install with DuckDB support
 pip install -e ".[duckdb]"
 
+# Install with Postgres wire protocol support (for DuckDB via buenavista)
+pip install -e ".[postgres]"
+
 # Install with all database support
 pip install -e ".[all]"
 ```
@@ -101,6 +104,15 @@ legend-cli project create "Project Name" --description "Description"
 
 # Get project details
 legend-cli project info <project-id>
+
+# Delete a specific project
+legend-cli project delete "Project Name"
+
+# Delete all projects (except 'Guided Tour')
+legend-cli project delete --all
+
+# Delete all projects without confirmation
+legend-cli project delete --all --force
 ```
 
 ### Workspace Management
@@ -593,8 +605,10 @@ legend-cli model from-duckdb <DATABASE_PATH> [OPTIONS]
 | `--project-name` | Name for new Legend project |
 | `--project-id, -p` | Use existing project ID |
 | `--workspace, -w` | Workspace ID (default: dev-workspace) |
-| `--host` | PostgreSQL proxy host (default: host.docker.internal) |
-| `--port` | PostgreSQL proxy port (default: 5433) |
+| `--host` | PostgreSQL proxy host for Legend connection (default: host.docker.internal) |
+| `--port` | PostgreSQL proxy port for Legend connection (default: 5433) |
+| `--postgres-port, -pp` | Connect via Postgres wire protocol on this port for introspection (use when DuckDB file is locked by buenavista) |
+| `--postgres-host, -ph` | Host for Postgres wire protocol introspection (default: localhost) |
 | `--dry-run` | Preview without pushing |
 | `--output, -o` | Save Pure files to directory |
 | `--doc-source, -d` | Documentation source (URL, PDF, or JSON) |
@@ -632,6 +646,33 @@ legend-cli model from-duckdb /path/to/data.duckdb \
   --project-name "analytics-model" \
   --auto-docs
 ```
+
+#### Introspecting via Postgres Wire Protocol
+
+When Buena Vista is running and has locked the DuckDB file, direct file access will fail with:
+```
+Error: IO Error: Could not set lock on file "...database.duckdb":
+Conflicting lock is held in Python (PID xxxxx)
+```
+
+Use `--postgres-port` to introspect via the Postgres wire protocol instead:
+
+```bash
+# Connect via Postgres wire protocol when DuckDB file is locked by buenavista
+legend-cli model from-duckdb ./trading_core.duckdb \
+  --postgres-port 5433 \
+  --doc-source ./trading_core_documentation.pdf \
+  --enhanced \
+  --enums
+
+# With custom host (if buenavista runs on a different machine)
+legend-cli model from-duckdb ./data.duckdb \
+  --postgres-port 5433 \
+  --postgres-host 192.168.1.100 \
+  --enhanced
+```
+
+This allows you to keep Buena Vista running (for Legend Engine queries) while still introspecting the database schema.
 
 #### Complete DuckDB + Legend Workflow
 
@@ -736,7 +777,9 @@ legend-cli model list-duckdb-tables ./my_database.duckdb --schema main
 | "Connection refused" | Ensure Buena Vista is running: `python -m buenavista.examples.duckdb_postgres ./db.duckdb` |
 | "Connection refused" from Legend | Use `host.docker.internal` instead of `localhost` (Docker networking) |
 | "Database is locked" | Close other connections (DBeaver, other scripts) to the DuckDB file |
+| "Could not set lock on file" | Use `--postgres-port 5433` to introspect via Postgres wire protocol instead of direct file access |
 | "Module duckdb not found" | Install with `pip install -e ".[duckdb]"` |
+| "psycopg2 not found" | Install with `pip install psycopg2-binary` or `pip install -e ".[postgres]"` |
 | Tables not showing | Check schema name with `list-duckdb-tables` command |
 
 ## MCP Server for Claude Desktop
@@ -788,12 +831,12 @@ Legend CLI includes a Model Context Protocol (MCP) server that enables Claude De
 
 | Category | Tool | Description |
 |----------|------|-------------|
-| **Database** | `connect_database` | Connect to Snowflake or DuckDB |
+| **Database** | `connect_database` | Connect to Snowflake or DuckDB (supports `postgres_port` for wire protocol) |
 | | `list_databases` | List available databases |
 | | `list_schemas` | List schemas in a database |
 | | `list_tables` | List tables in a schema |
 | | `describe_table` | Get table structure details |
-| | `introspect_database` | Full schema introspection with relationship detection |
+| | `introspect_database` | Full schema introspection with relationship detection (supports `postgres_port` for DuckDB) |
 | **Generation** | `generate_model` | Generate complete Legend model with enhanced mode (enumerations, doc.doc, EnumerationMappings) |
 | | `generate_store` | Generate database store definition |
 | | `generate_classes` | Generate Pure classes from tables |
@@ -843,6 +886,16 @@ Create a Legend model from my DuckDB file at /path/to/data.duckdb:
 4. Introspect all schemas and detect relationships
 5. Generate complete model with documentation
 6. Push to SDLC
+```
+
+**DuckDB with Postgres Wire Protocol (when file is locked by buenavista):**
+```
+Create a Legend model from DuckDB at /path/to/trading_core.duckdb:
+1. Create project "Trading-Models"
+2. Connect to DuckDB via Postgres wire protocol on port 5433 (the file is locked by buenavista)
+3. Introspect the main schema with postgres_port=5433
+4. Generate enhanced model with enums from /path/to/trading_core_documentation.pdf
+5. Push to SDLC
 ```
 
 **Model Updates:**
