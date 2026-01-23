@@ -106,6 +106,8 @@ def _populate_enum_values(
     db_type: "DatabaseType",
     database: str,
     schema: "Database",
+    postgres_host: Optional[str] = None,
+    postgres_port: Optional[int] = None,
 ) -> "EnhancedModelSpec":
     """Populate enum candidates with actual values from the database.
 
@@ -114,6 +116,8 @@ def _populate_enum_values(
         db_type: Database type (snowflake or duckdb)
         database: Database path/name
         schema: Database schema object
+        postgres_host: Host for Postgres wire protocol connection (DuckDB only)
+        postgres_port: Port for Postgres wire protocol connection (DuckDB only)
 
     Returns:
         Updated EnhancedModelSpec with populated enum values
@@ -126,7 +130,12 @@ def _populate_enum_values(
     try:
         if db_type == DatabaseType.DUCKDB:
             from legend_cli.database import DuckDBIntrospector
-            introspector = DuckDBIntrospector(database_path=database, read_only=True)
+            introspector = DuckDBIntrospector(
+                database_path=database,
+                read_only=True,
+                postgres_host=postgres_host if postgres_port else None,
+                postgres_port=postgres_port,
+            )
         else:
             from legend_cli.database import SnowflakeIntrospector
             introspector = SnowflakeIntrospector()
@@ -229,11 +238,19 @@ def get_tools() -> List[Tool]:
                     },
                     "duckdb_host": {
                         "type": "string",
-                        "description": "DuckDB PostgreSQL proxy host (DuckDB only, default: host.docker.internal)"
+                        "description": "DuckDB PostgreSQL proxy host for Legend connection (DuckDB only, default: host.docker.internal)"
                     },
                     "duckdb_port": {
                         "type": "integer",
-                        "description": "DuckDB PostgreSQL proxy port (DuckDB only, default: 5433)"
+                        "description": "DuckDB PostgreSQL proxy port for Legend connection (DuckDB only, default: 5433)"
+                    },
+                    "postgres_host": {
+                        "type": "string",
+                        "description": "Host for Postgres wire protocol introspection (DuckDB only, default: localhost). Use when DuckDB file is locked by buenavista."
+                    },
+                    "postgres_port": {
+                        "type": "integer",
+                        "description": "Port for Postgres wire protocol introspection (DuckDB only, e.g., 5433). When set, connects via psycopg2 instead of direct file access."
                     },
                     "skip_database_prompt": {
                         "type": "boolean",
@@ -582,6 +599,8 @@ async def generate_model(
     snowflake_role: Optional[str] = None,
     duckdb_host: str = "host.docker.internal",
     duckdb_port: int = 5433,
+    postgres_host: Optional[str] = None,
+    postgres_port: Optional[int] = None,
     skip_database_prompt: bool = False,
     detect_hierarchies: bool = False,  # Disabled - creates unmappable phantom classes
     detect_enums: bool = True,
@@ -613,7 +632,12 @@ async def generate_model(
         if not schema:
             # Need to introspect first
             from .database import introspect_database as do_introspect
-            await do_introspect(ctx, db_type, database, schema_filter, detect_relationships=True)
+            await do_introspect(
+                ctx, db_type, database, schema_filter,
+                detect_relationships=True,
+                postgres_host=postgres_host,
+                postgres_port=postgres_port,
+            )
             schema = ctx.get_schema(db_type_enum, database)
 
         if not schema:
@@ -745,6 +769,8 @@ async def generate_model(
                         db_type_enum,
                         database,
                         schema,
+                        postgres_host=postgres_host,
+                        postgres_port=postgres_port,
                     )
                     # Update summary with enums that have values
                     enums_with_values = sum(1 for e in enhanced_spec.enumerations if e.values)

@@ -18,7 +18,7 @@ def get_tools() -> List[Tool]:
     return [
         Tool(
             name="connect_database",
-            description="Connect to a Snowflake or DuckDB database. For Snowflake, requires account, user credentials via environment variables. For DuckDB, requires the path to the .duckdb file.",
+            description="Connect to a Snowflake or DuckDB database. For Snowflake, requires account, user credentials via environment variables. For DuckDB, requires the path to the .duckdb file. If DuckDB is served via Postgres wire protocol (e.g., buenavista), use postgres_port to connect via psycopg2 instead of direct file access.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -38,6 +38,14 @@ def get_tools() -> List[Tool]:
                     "role": {
                         "type": "string",
                         "description": "Snowflake role (Snowflake only, default: from env)"
+                    },
+                    "postgres_host": {
+                        "type": "string",
+                        "description": "Host for Postgres wire protocol connection (DuckDB only, default: localhost)"
+                    },
+                    "postgres_port": {
+                        "type": "integer",
+                        "description": "Port for Postgres wire protocol connection (DuckDB only, e.g., 5433 for buenavista). When set, connects via psycopg2 instead of direct file access."
                     }
                 },
                 "required": ["db_type", "database"]
@@ -138,7 +146,7 @@ def get_tools() -> List[Tool]:
         ),
         Tool(
             name="introspect_database",
-            description="Perform full database introspection including all schemas, tables, columns, and relationship detection. This creates a complete schema model ready for Pure code generation.",
+            description="Perform full database introspection including all schemas, tables, columns, and relationship detection. This creates a complete schema model ready for Pure code generation. For DuckDB served via Postgres wire protocol (e.g., buenavista), use postgres_port to connect via psycopg2.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -159,6 +167,14 @@ def get_tools() -> List[Tool]:
                         "type": "boolean",
                         "description": "Whether to detect foreign key relationships (default: true)",
                         "default": True
+                    },
+                    "postgres_host": {
+                        "type": "string",
+                        "description": "Host for Postgres wire protocol connection (DuckDB only, default: localhost)"
+                    },
+                    "postgres_port": {
+                        "type": "integer",
+                        "description": "Port for Postgres wire protocol connection (DuckDB only, e.g., 5433 for buenavista)"
                     }
                 },
                 "required": ["db_type", "database"]
@@ -168,7 +184,17 @@ def get_tools() -> List[Tool]:
 
 
 def _get_introspector(db_type: str, database: str, **kwargs):
-    """Get the appropriate database introspector."""
+    """Get the appropriate database introspector.
+
+    Args:
+        db_type: Type of database (snowflake or duckdb)
+        database: Database identifier (name for Snowflake, path for DuckDB)
+        **kwargs: Additional connection parameters:
+            - warehouse: Snowflake warehouse (Snowflake only)
+            - role: Snowflake role (Snowflake only)
+            - postgres_host: Host for Postgres wire protocol (DuckDB only)
+            - postgres_port: Port for Postgres wire protocol (DuckDB only)
+    """
     db_type_enum = DatabaseType(db_type.lower())
 
     if db_type_enum == DatabaseType.SNOWFLAKE:
@@ -179,7 +205,13 @@ def _get_introspector(db_type: str, database: str, **kwargs):
         )
     elif db_type_enum == DatabaseType.DUCKDB:
         from legend_cli.database.duckdb import DuckDBIntrospector
-        return DuckDBIntrospector(database_path=database)
+        postgres_port = kwargs.get("postgres_port")
+        postgres_host = kwargs.get("postgres_host")
+        return DuckDBIntrospector(
+            database_path=database,
+            postgres_host=postgres_host if postgres_port else None,
+            postgres_port=postgres_port,
+        )
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
 
@@ -190,6 +222,8 @@ async def connect_database(
     database: str,
     warehouse: Optional[str] = None,
     role: Optional[str] = None,
+    postgres_host: Optional[str] = None,
+    postgres_port: Optional[int] = None,
 ) -> str:
     """Connect to a database."""
     try:
@@ -206,7 +240,13 @@ async def connect_database(
             })
 
         # Create introspector
-        introspector = _get_introspector(db_type, database, warehouse=warehouse, role=role)
+        introspector = _get_introspector(
+            db_type, database,
+            warehouse=warehouse,
+            role=role,
+            postgres_host=postgres_host,
+            postgres_port=postgres_port,
+        )
 
         # Test connection
         introspector.connect(database)
@@ -218,15 +258,19 @@ async def connect_database(
             introspector=introspector,
             connection_params={
                 "warehouse": warehouse,
-                "role": role
+                "role": role,
+                "postgres_host": postgres_host,
+                "postgres_port": postgres_port,
             }
         )
 
+        connection_method = "Postgres wire protocol" if postgres_port else "direct"
         return json.dumps({
             "status": "connected",
             "db_type": db_type,
             "database": database,
-            "message": f"Successfully connected to {db_type} database: {database}"
+            "connection_method": connection_method,
+            "message": f"Successfully connected to {db_type} database: {database} via {connection_method}"
         })
 
     except ImportError as e:
@@ -379,7 +423,9 @@ async def introspect_database(
     db_type: str,
     database: str,
     schema_filter: Optional[str] = None,
-    detect_relationships: bool = True
+    detect_relationships: bool = True,
+    postgres_host: Optional[str] = None,
+    postgres_port: Optional[int] = None,
 ) -> str:
     """Perform full database introspection."""
     try:
@@ -388,9 +434,19 @@ async def introspect_database(
         # Get or create connection
         conn = ctx.get_connection(db_type_enum, database)
         if not conn:
-            introspector = _get_introspector(db_type, database)
+            introspector = _get_introspector(
+                db_type, database,
+                postgres_host=postgres_host,
+                postgres_port=postgres_port,
+            )
             introspector.connect(database)
-            ctx.add_connection(db_type_enum, database, introspector)
+            ctx.add_connection(
+                db_type_enum, database, introspector,
+                connection_params={
+                    "postgres_host": postgres_host,
+                    "postgres_port": postgres_port,
+                }
+            )
             conn = ctx.get_connection(db_type_enum, database)
 
         # Introspect the database
